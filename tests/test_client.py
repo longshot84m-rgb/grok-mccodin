@@ -32,9 +32,7 @@ class TestGrokClient:
     def test_chat_success(self, mock_post, config):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "Hello from Grok!"}}]
-        }
+        mock_resp.json.return_value = {"choices": [{"message": {"content": "Hello from Grok!"}}]}
         mock_post.return_value = mock_resp
 
         client = GrokClient(config)

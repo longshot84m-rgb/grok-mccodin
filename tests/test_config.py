@@ -21,8 +21,10 @@ class TestConfig:
 
     def test_has_x_credentials(self):
         cfg = Config(
-            x_api_key="a", x_api_secret="b",
-            x_access_token="c", x_access_secret="d",
+            x_api_key="a",
+            x_api_secret="b",
+            x_access_token="c",
+            x_access_secret="d",
         )
         assert cfg.has_x_credentials
         assert not Config().has_x_credentials

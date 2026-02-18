@@ -28,7 +28,7 @@ jobs:
         run: pip install "black>=26,<27" "ruff>=0.3" "mypy>=1.0" "types-requests>=2.31" "pytest>=8" "pytest-mock>=3.12"
 
       - name: Format check (black)
-        run: black --check .
+        run: black --check --diff .
 
       - name: Lint (ruff)
         run: ruff check .

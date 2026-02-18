@@ -76,7 +76,9 @@ def run_shell(
         return {"stdout": "", "stderr": f"[ERROR] {exc}", "returncode": -1}
 
 
-def run_python(code: str, *, cwd: str | Path = ".", timeout: int = DEFAULT_TIMEOUT) -> dict[str, str | int]:
+def run_python(
+    code: str, *, cwd: str | Path = ".", timeout: int = DEFAULT_TIMEOUT
+) -> dict[str, str | int]:
     """Write *code* to a temp file and execute it with ``python``."""
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", dir=str(cwd), delete=False, encoding="utf-8"
