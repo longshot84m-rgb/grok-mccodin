@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
 
 import typer
@@ -24,7 +23,7 @@ from grok_mccodin.editor import (
     extract_creates,
     extract_deletes,
 )
-from grok_mccodin.executor import run_python, run_shell, spawn_agent
+from grok_mccodin.executor import run_shell, spawn_agent
 from grok_mccodin.social import post_to_x, search_giphy
 from grok_mccodin.utils import index_folder, log_receipt, read_file_safe, take_screenshot
 
@@ -129,11 +128,11 @@ def _handle_slash(
         if not arg:
             console.print("[red]Usage: /run <command>[/red]")
             return None
-        result = run_shell(arg, cwd=folder, safe_lock=config.safe_lock)
-        if result["stdout"]:
-            console.print(result["stdout"])
-        if result["stderr"]:
-            console.print(f"[red]{result['stderr']}[/red]")
+        shell_out = run_shell(arg, cwd=folder, safe_lock=config.safe_lock)
+        if shell_out["stdout"]:
+            console.print(shell_out["stdout"])
+        if shell_out["stderr"]:
+            console.print(f"[red]{shell_out['stderr']}[/red]")
         log_receipt(config.log_file, action="shell_run", detail=arg)
         return None
 
@@ -141,11 +140,11 @@ def _handle_slash(
         if not arg:
             console.print("[red]Usage: /agent <task>[/red]")
             return None
-        result = spawn_agent(arg, cwd=folder)
-        if result["stdout"]:
-            console.print(result["stdout"])
-        if result["stderr"]:
-            console.print(f"[red]{result['stderr']}[/red]")
+        agent_out = spawn_agent(arg, cwd=folder)
+        if agent_out["stdout"]:
+            console.print(agent_out["stdout"])
+        if agent_out["stderr"]:
+            console.print(f"[red]{agent_out['stderr']}[/red]")
         return None
 
     if cmd == "/read":
@@ -229,11 +228,14 @@ def _process_response(
 # CLI Commands
 # ---------------------------------------------------------------------------
 
+
 @app.command()
 def chat(
     folder: str = typer.Option(".", "--folder", "-f", help="Working directory for the project."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging."),
-    model: str = typer.Option("", "--model", "-m", help="Override the Grok model (e.g. grok-3-mini)."),
+    model: str = typer.Option(
+        "", "--model", "-m", help="Override the Grok model (e.g. grok-3-mini)."
+    ),
 ) -> None:
     """Start an interactive Grok McCodin chat session."""
     # Logging
@@ -268,7 +270,9 @@ def chat(
 
     # Banner
     console.print(f"[bold cyan]{BANNER}[/bold cyan]")
-    console.print(f"[dim]v{__version__}  |  model: {config.grok_model}  |  folder: {folder_path}[/dim]")
+    console.print(
+        f"[dim]v{__version__}  |  model: {config.grok_model}  |  folder: {folder_path}[/dim]"
+    )
     console.print("[dim]Type /help for commands, /quit to exit.[/dim]\n")
 
     # Build initial context

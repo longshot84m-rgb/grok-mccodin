@@ -18,6 +18,7 @@ console = Console()
 # Giphy
 # ---------------------------------------------------------------------------
 
+
 def search_giphy(query: str, config: Config, limit: int = 5) -> list[dict[str, str]]:
     """Search Giphy and return a list of {title, url} dicts."""
     if not config.has_giphy_key:
@@ -25,7 +26,12 @@ def search_giphy(query: str, config: Config, limit: int = 5) -> list[dict[str, s
         return []
 
     url = "https://api.giphy.com/v1/gifs/search"
-    params = {"api_key": config.giphy_api_key, "q": query, "limit": limit, "rating": "g"}
+    params: dict[str, str | int] = {
+        "api_key": config.giphy_api_key,
+        "q": query,
+        "limit": limit,
+        "rating": "g",
+    }
     try:
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
@@ -46,6 +52,7 @@ def search_giphy(query: str, config: Config, limit: int = 5) -> list[dict[str, s
 # ---------------------------------------------------------------------------
 # X / Twitter
 # ---------------------------------------------------------------------------
+
 
 def post_to_x(
     text: str,

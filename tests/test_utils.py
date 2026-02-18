@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from grok_mccodin.utils import file_hash, index_folder, log_receipt, read_file_safe
 

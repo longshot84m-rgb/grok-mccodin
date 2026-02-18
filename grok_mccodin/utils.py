@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,16 +12,49 @@ logger = logging.getLogger(__name__)
 
 # Extensions we care about when indexing a project folder
 CODE_EXTENSIONS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h",
-    ".cs", ".go", ".rs", ".rb", ".php", ".html", ".css", ".scss",
-    ".json", ".yaml", ".yml", ".toml", ".md", ".txt", ".sh", ".bat",
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".cs",
+    ".go",
+    ".rs",
+    ".rb",
+    ".php",
+    ".html",
+    ".css",
+    ".scss",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".md",
+    ".txt",
+    ".sh",
+    ".bat",
 }
 
 # Directories to skip during indexing
 SKIP_DIRS = {
-    "__pycache__", ".git", "node_modules", ".venv", "venv", "env",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build",
-    ".tox", ".eggs", "*.egg-info",
+    "__pycache__",
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "env",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    ".tox",
+    ".eggs",
+    "*.egg-info",
 }
 
 

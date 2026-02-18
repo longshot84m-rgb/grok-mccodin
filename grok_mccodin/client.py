@@ -69,7 +69,7 @@ class GrokClient:
             raise GrokAPIError(resp.status_code, resp.text)
 
         data = resp.json()
-        reply = data["choices"][0]["message"]["content"]
+        reply: str = data["choices"][0]["message"]["content"]
         logger.debug("Reply length: %d chars", len(reply))
         return reply
 
