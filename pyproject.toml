@@ -1,0 +1,62 @@
+[tool.poetry]
+name = "grok-mccodin"
+version = "0.1.0"
+description = "Grok-powered CLI for code editing, execution, and X posting"
+authors = ["NetOra <netora@example.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "grok_mccodin"}]
+keywords = ["grok", "cli", "ai", "code-assistant", "xai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Utilities",
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+requests = "^2.31"
+rich = "^13.7"
+tweepy = "^4.14"
+typer = {version = "^0.12", extras = ["all"]}
+tqdm = "^4.66"
+python-dotenv = "^1.0"
+pillow = "^10.0"
+
+[tool.poetry.group.optional.dependencies]
+pyautogui = "^0.9"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+pytest-mock = "^3.12"
+black = "^24.0"
+mypy = "^1.0"
+pylint = "^3.0"
+ruff = "^0.3"
+
+[tool.poetry.scripts]
+grok-mccodin = "grok_mccodin.main:app"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
