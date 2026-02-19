@@ -71,7 +71,8 @@ def pip_list(*, cwd: str | Path = ".") -> list[dict[str, str]]:
     """List installed Python packages. Returns [{"name": ..., "version": ...}]."""
     output = _run_cmd(["pip", "list", "--format=json"], cwd=cwd)
     try:
-        return json.loads(output)
+        data: list[dict[str, str]] = json.loads(output)
+        return data
     except json.JSONDecodeError:
         return []
 

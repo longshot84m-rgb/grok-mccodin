@@ -473,13 +473,14 @@ def _handle_slash(
             console.print("[red]Usage: /rag <search query>[/red]")
             return None
         console.print("[dim]Searching codebase...[/dim]")
-        results = search_codebase(folder, arg)
-        console.print(Panel(results, title="RAG Search Results", border_style="magenta"))
+        rag_output = search_codebase(folder, arg)
+        console.print(Panel(rag_output, title="RAG Search Results", border_style="magenta"))
         log_receipt(config.log_file, action="rag_search", detail=arg)
         return None
 
     if cmd == "/mcp":
-        return _handle_mcp(arg, config, folder)
+        _handle_mcp(arg, config, folder)
+        return None
 
     if cmd == "/log":
         log_path = Path(config.log_file)

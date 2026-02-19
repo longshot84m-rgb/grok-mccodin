@@ -101,7 +101,8 @@ class MCPClient:
         """Discover available tools from the server."""
         self._ensure_running()
         result = self._request("tools/list", {})
-        return result.get("tools", [])
+        tools: list[dict[str, Any]] = result.get("tools", [])
+        return tools
 
     def call_tool(
         self, name: str, arguments: dict[str, Any] | None = None, timeout: int = 30
@@ -116,30 +117,37 @@ class MCPClient:
             {"name": name, "arguments": arguments or {}},
             timeout=timeout,
         )
-        return result.get("content", [])
+        content: list[dict[str, Any]] = result.get("content", [])
+        return content
 
     def list_resources(self) -> list[dict[str, Any]]:
         """List available resources from the server."""
         self._ensure_running()
         result = self._request("resources/list", {})
-        return result.get("resources", [])
+        resources: list[dict[str, Any]] = result.get("resources", [])
+        return resources
 
     def read_resource(self, uri: str) -> list[dict[str, Any]]:
         """Read a specific resource by URI."""
         self._ensure_running()
         result = self._request("resources/read", {"uri": uri})
-        return result.get("contents", [])
+        contents: list[dict[str, Any]] = result.get("contents", [])
+        return contents
 
     def list_prompts(self) -> list[dict[str, Any]]:
         """List available prompt templates."""
         self._ensure_running()
         result = self._request("prompts/list", {})
-        return result.get("prompts", [])
+        prompts: list[dict[str, Any]] = result.get("prompts", [])
+        return prompts
 
     def get_prompt(self, name: str, arguments: dict[str, str] | None = None) -> dict[str, Any]:
         """Retrieve a prompt template with optional arguments."""
         self._ensure_running()
-        return self._request("prompts/get", {"name": name, "arguments": arguments or {}})
+        prompt: dict[str, Any] = self._request(
+            "prompts/get", {"name": name, "arguments": arguments or {}}
+        )
+        return prompt
 
     # ------------------------------------------------------------------
     # JSON-RPC 2.0 transport
@@ -185,7 +193,7 @@ class MCPClient:
                 continue
 
             try:
-                msg = json.loads(line_str)
+                msg: dict[str, Any] = json.loads(line_str)
             except json.JSONDecodeError:
                 logger.debug("MCP non-JSON line: %s", line_str[:200])
                 continue
@@ -215,7 +223,8 @@ class MCPClient:
             err = response["error"]
             raise MCPError(f"MCP error {err.get('code', '?')}: {err.get('message', 'unknown')}")
 
-        return response.get("result", {})
+        result: dict[str, Any] = response.get("result", {})
+        return result
 
     def _notify(self, method: str, params: dict[str, Any]) -> None:
         """Send a JSON-RPC notification (no response expected)."""
