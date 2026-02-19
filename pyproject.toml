@@ -27,6 +27,8 @@ pillow = "^10.0"
 
 [tool.poetry.group.optional.dependencies]
 pyautogui = "^0.9"
+psycopg2-binary = "^2.9"
+mysql-connector-python = "^8.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

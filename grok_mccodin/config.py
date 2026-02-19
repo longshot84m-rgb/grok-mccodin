@@ -37,6 +37,9 @@ class Config:
     # Giphy
     giphy_api_key: str = ""
 
+    # Database
+    db_path: str = "project.db"
+
     # Runtime
     safe_lock: bool = False
     log_file: str = "grok_mccodin_log.json"
@@ -58,6 +61,7 @@ class Config:
             x_access_token=os.getenv("X_ACCESS_TOKEN", ""),
             x_access_secret=os.getenv("X_ACCESS_SECRET", ""),
             giphy_api_key=os.getenv("GIPHY_API_KEY", ""),
+            db_path=os.getenv("DB_PATH", "project.db"),
         )
 
     @property
