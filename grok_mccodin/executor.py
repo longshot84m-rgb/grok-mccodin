@@ -35,14 +35,27 @@ def is_safe(command: str) -> bool:
     return True
 
 
+def _confirm(prompt: str) -> bool:
+    """Ask the user for y/n confirmation via the console."""
+    try:
+        answer = console.input(f"[bold yellow]{prompt} [y/N]:[/bold yellow] ").strip().lower()
+        return answer in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
 def run_shell(
     command: str,
     *,
     cwd: str | Path = ".",
     timeout: int = DEFAULT_TIMEOUT,
     safe_lock: bool = False,
+    confirm: bool = True,
 ) -> dict[str, str | int]:
     """Execute a shell command and return its output.
+
+    Args:
+        confirm: If True (default), prompt the user before running.
 
     Returns:
         {"stdout": ..., "stderr": ..., "returncode": ...}
@@ -51,10 +64,20 @@ def run_shell(
         return {"stdout": "", "stderr": "[Safe Lock ON] Execution blocked.", "returncode": -1}
 
     if not is_safe(command):
-        return {"stdout": "", "stderr": f"[BLOCKED] Dangerous command: {command}", "returncode": -1}
+        return {
+            "stdout": "",
+            "stderr": f"[BLOCKED] Dangerous command: {command}",
+            "returncode": -1,
+        }
+
+    if confirm:
+        console.print(Panel(command, title="Command to run", border_style="cyan"))
+        if not _confirm("Execute this command?"):
+            return {"stdout": "", "stderr": "[SKIPPED] User declined.", "returncode": -1}
+    else:
+        console.print(Panel(command, title="Running", border_style="cyan"))
 
     logger.info("Executing: %s", command)
-    console.print(Panel(command, title="Running", border_style="cyan"))
 
     try:
         result = subprocess.run(
@@ -71,15 +94,32 @@ def run_shell(
             "returncode": result.returncode,
         }
     except subprocess.TimeoutExpired:
-        return {"stdout": "", "stderr": f"[TIMEOUT] Command exceeded {timeout}s", "returncode": -1}
+        return {
+            "stdout": "",
+            "stderr": f"[TIMEOUT] Command exceeded {timeout}s",
+            "returncode": -1,
+        }
     except OSError as exc:
         return {"stdout": "", "stderr": f"[ERROR] {exc}", "returncode": -1}
 
 
 def run_python(
-    code: str, *, cwd: str | Path = ".", timeout: int = DEFAULT_TIMEOUT
+    code: str,
+    *,
+    cwd: str | Path = ".",
+    timeout: int = DEFAULT_TIMEOUT,
+    confirm: bool = True,
 ) -> dict[str, str | int]:
-    """Write *code* to a temp file and execute it with ``python``."""
+    """Write *code* to a temp file and execute it with ``python``.
+
+    Args:
+        confirm: If True (default), show the code and prompt before running.
+    """
+    if confirm:
+        console.print(Panel(code, title="Python code to execute", border_style="magenta"))
+        if not _confirm("Run this Python code?"):
+            return {"stdout": "", "stderr": "[SKIPPED] User declined.", "returncode": -1}
+
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", dir=str(cwd), delete=False, encoding="utf-8"
     ) as tmp:
@@ -87,7 +127,7 @@ def run_python(
         tmp_path = tmp.name
 
     logger.debug("Running temp script: %s", tmp_path)
-    result = run_shell(f"python {tmp_path}", cwd=cwd, timeout=timeout)
+    result = run_shell(f"python {tmp_path}", cwd=cwd, timeout=timeout, confirm=False)
 
     # Clean up temp file
     try:

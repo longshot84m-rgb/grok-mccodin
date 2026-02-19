@@ -36,14 +36,18 @@ def search_giphy(query: str, config: Config, limit: int = 5) -> list[dict[str, s
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json().get("data", [])
-        return [
-            {
-                "title": g.get("title", ""),
-                "url": g["images"]["original"]["url"],
-            }
-            for g in data
-            if "images" in g
-        ]
+        results = []
+        for g in data:
+            try:
+                results.append(
+                    {
+                        "title": g.get("title", ""),
+                        "url": g["images"]["original"]["url"],
+                    }
+                )
+            except (KeyError, TypeError):
+                continue
+        return results
     except requests.RequestException as exc:
         logger.error("Giphy search failed: %s", exc)
         return []

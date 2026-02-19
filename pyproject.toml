@@ -34,7 +34,6 @@ pytest-mock = "^3.12"
 black = ">=24.0"
 mypy = "^1.0"
 types-requests = "^2.31"
-pylint = "^3.0"
 ruff = ">=0.3"
 
 [tool.poetry.scripts]

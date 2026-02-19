@@ -68,8 +68,12 @@ class GrokClient:
             logger.error("Grok API error %d: %s", resp.status_code, resp.text[:500])
             raise GrokAPIError(resp.status_code, resp.text)
 
-        data = resp.json()
-        reply: str = data["choices"][0]["message"]["content"]
+        try:
+            data = resp.json()
+            reply: str = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, ValueError) as exc:
+            logger.error("Unexpected API response structure: %s", exc)
+            raise GrokAPIError(resp.status_code, f"Malformed response: {resp.text[:300]}") from exc
         logger.debug("Reply length: %d chars", len(reply))
         return reply
 

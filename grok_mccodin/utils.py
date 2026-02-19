@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,7 +40,7 @@ CODE_EXTENSIONS = {
     ".bat",
 }
 
-# Directories to skip during indexing
+# Directories to skip during indexing (exact-match names)
 SKIP_DIRS = {
     "__pycache__",
     ".git",
@@ -54,8 +55,18 @@ SKIP_DIRS = {
     "build",
     ".tox",
     ".eggs",
-    "*.egg-info",
+    ".trash",
 }
+
+# Suffix patterns to skip (checked via str.endswith)
+SKIP_DIR_SUFFIXES = (".egg-info",)
+
+
+def _should_skip_dir(name: str) -> bool:
+    """Return True if a directory name should be excluded from indexing."""
+    if name in SKIP_DIRS:
+        return True
+    return any(name.endswith(s) for s in SKIP_DIR_SUFFIXES)
 
 
 def index_folder(folder: str | Path, max_depth: int = 4) -> str:
@@ -86,7 +97,7 @@ def index_folder(folder: str | Path, max_depth: int = 4) -> str:
             if entry.name.startswith(".") and entry.name not in (".env.example",):
                 continue
             if entry.is_dir():
-                if entry.name in SKIP_DIRS:
+                if _should_skip_dir(entry.name):
                     continue
                 indent = "  " * depth
                 lines.append(f"{indent}{entry.name}/")
@@ -128,7 +139,7 @@ def log_receipt(
     detail: str = "",
     user_input: str = "",
 ) -> None:
-    """Append a JSON receipt entry to the log file."""
+    """Append a JSON receipt entry to the log file (atomic write)."""
     log_file = Path(log_file)
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -145,7 +156,17 @@ def log_receipt(
             pass
 
     existing.append(entry)
-    log_file.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+
+    # Atomic write: write to temp file in same directory, then rename
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(log_file.parent), suffix=".tmp", prefix=".log_")
+        with open(fd, "w", encoding="utf-8") as fh:
+            json.dump(existing, fh, indent=2)
+        Path(tmp_path).replace(log_file)
+    except OSError:
+        # Fallback to direct write if atomic fails (e.g. cross-device)
+        log_file.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+
     logger.debug("Logged receipt: %s", action)
 
 

@@ -275,10 +275,10 @@ def chat(
     )
     console.print("[dim]Type /help for commands, /quit to exit.[/dim]\n")
 
-    # Build initial context
-    folder_index = index_folder(folder_path)
+    # Build context and state
     client = GrokClient(config)
     history: list[dict[str, str]] = []
+    max_history = 40  # Keep last N messages to avoid token overflow
 
     # Main loop
     while True:
@@ -301,6 +301,13 @@ def chat(
                 history.clear()
                 console.print("[dim]History cleared.[/dim]")
             continue
+
+        # Re-index folder each turn so Grok sees recent file changes
+        folder_index = index_folder(folder_path)
+
+        # Trim history to avoid exceeding model context window
+        if len(history) > max_history:
+            history = history[-max_history:]
 
         # Build messages and call Grok
         messages = client.build_messages(history, user_input, context=folder_index)

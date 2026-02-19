@@ -6,6 +6,7 @@ import difflib
 import logging
 import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
@@ -13,6 +14,22 @@ from rich.syntax import Syntax
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+
+def _safe_resolve(filepath: str | Path, base_dir: str | Path) -> Path | None:
+    """Resolve *filepath* relative to *base_dir*, rejecting path traversal.
+
+    Returns the resolved Path if it stays within *base_dir*, or None if it
+    would escape (e.g. ``../../etc/passwd``).
+    """
+    base = Path(base_dir).resolve()
+    target = (base / filepath).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        logger.warning("Path traversal blocked: %s escapes %s", filepath, base)
+        return None
+    return target
 
 
 def extract_code_blocks(text: str) -> list[dict[str, str]]:
@@ -71,13 +88,16 @@ def show_diff(original: str, modified: str, filename: str = "") -> str:
 def apply_edit(filepath: str | Path, new_content: str, *, base_dir: str | Path = ".") -> str:
     """Write *new_content* to *filepath* (relative to *base_dir*), showing a diff first.
 
-    Returns a status message.
+    Returns a status message.  Rejects paths that escape *base_dir*.
     """
-    filepath = Path(base_dir) / filepath
-    filepath.parent.mkdir(parents=True, exist_ok=True)
+    resolved = _safe_resolve(filepath, base_dir)
+    if resolved is None:
+        return f"[blocked] Path traversal: {filepath}"
 
-    if filepath.is_file():
-        original = filepath.read_text(encoding="utf-8", errors="replace")
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+
+    if resolved.is_file():
+        original = resolved.read_text(encoding="utf-8", errors="replace")
         diff = show_diff(original, new_content, filename=str(filepath))
         if not diff:
             return f"No changes needed for {filepath}"
@@ -86,31 +106,42 @@ def apply_edit(filepath: str | Path, new_content: str, *, base_dir: str | Path =
     else:
         console.print(f"\n[bold green]Creating new file: {filepath}[/bold green]")
 
-    filepath.write_text(new_content, encoding="utf-8")
-    logger.info("Wrote %s (%d bytes)", filepath, len(new_content))
+    resolved.write_text(new_content, encoding="utf-8")
+    logger.info("Wrote %s (%d bytes)", resolved, len(new_content))
     return f"Updated {filepath}"
 
 
 def apply_create(filepath: str | Path, content: str, *, base_dir: str | Path = ".") -> str:
-    """Create a new file at *filepath*."""
-    filepath = Path(base_dir) / filepath
-    if filepath.exists():
+    """Create a new file at *filepath*.  Rejects paths that escape *base_dir*."""
+    resolved = _safe_resolve(filepath, base_dir)
+    if resolved is None:
+        return f"[blocked] Path traversal: {filepath}"
+
+    if resolved.exists():
         return f"[skip] {filepath} already exists — use edit instead"
-    filepath.parent.mkdir(parents=True, exist_ok=True)
-    filepath.write_text(content, encoding="utf-8")
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(content, encoding="utf-8")
     console.print(f"[bold green]Created {filepath}[/bold green]")
     return f"Created {filepath}"
 
 
 def apply_delete(filepath: str | Path, *, base_dir: str | Path = ".") -> str:
-    """Delete a file (moves to .trash/ first for safety)."""
-    filepath = Path(base_dir) / filepath
-    if not filepath.exists():
+    """Delete a file (moves to .trash/ first for safety).
+
+    Uses timestamped names to avoid collisions in .trash/.
+    Rejects paths that escape *base_dir*.
+    """
+    resolved = _safe_resolve(filepath, base_dir)
+    if resolved is None:
+        return f"[blocked] Path traversal: {filepath}"
+
+    if not resolved.exists():
         return f"[skip] {filepath} does not exist"
 
-    trash_dir = Path(base_dir) / ".trash"
+    trash_dir = Path(base_dir).resolve() / ".trash"
     trash_dir.mkdir(exist_ok=True)
-    dest = trash_dir / filepath.name
-    shutil.move(str(filepath), str(dest))
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    dest = trash_dir / f"{timestamp}_{resolved.name}"
+    shutil.move(str(resolved), str(dest))
     console.print(f"[bold red]Deleted {filepath}[/bold red] (backed up to .trash/)")
     return f"Deleted {filepath}"

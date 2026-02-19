@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from grok_mccodin.editor import (
+    _safe_resolve,
     apply_create,
     apply_delete,
     apply_edit,
@@ -12,6 +13,20 @@ from grok_mccodin.editor import (
     extract_deletes,
     show_diff,
 )
+
+
+class TestSafeResolve:
+    def test_normal_path(self, tmp_path):
+        assert _safe_resolve("foo.py", tmp_path) == (tmp_path / "foo.py").resolve()
+
+    def test_nested_path(self, tmp_path):
+        assert _safe_resolve("src/bar.py", tmp_path) is not None
+
+    def test_blocks_traversal(self, tmp_path):
+        assert _safe_resolve("../../etc/passwd", tmp_path) is None
+
+    def test_blocks_absolute_escape(self, tmp_path):
+        assert _safe_resolve("/etc/passwd", tmp_path) is None
 
 
 class TestExtractCodeBlocks:
@@ -82,6 +97,15 @@ class TestApplyEdit:
         apply_edit("f.py", "new", base_dir=tmp_path)
         assert (tmp_path / "f.py").read_text() == "new"
 
+    def test_blocks_path_traversal(self, tmp_path):
+        result = apply_edit("../../evil.py", "pwned", base_dir=tmp_path)
+        assert "blocked" in result.lower()
+
+    def test_no_changes_returns_message(self, tmp_path):
+        (tmp_path / "same.py").write_text("content")
+        result = apply_edit("same.py", "content", base_dir=tmp_path)
+        assert "No changes" in result
+
 
 class TestApplyCreate:
     def test_creates_file(self, tmp_path):
@@ -94,14 +118,25 @@ class TestApplyCreate:
         assert "skip" in result
         assert (tmp_path / "f.py").read_text() == "old"
 
+    def test_blocks_path_traversal(self, tmp_path):
+        result = apply_create("../../evil.py", "pwned", base_dir=tmp_path)
+        assert "blocked" in result.lower()
+
 
 class TestApplyDelete:
     def test_deletes_to_trash(self, tmp_path):
         (tmp_path / "doomed.py").write_text("bye")
         apply_delete("doomed.py", base_dir=tmp_path)
         assert not (tmp_path / "doomed.py").exists()
-        assert (tmp_path / ".trash" / "doomed.py").exists()
+        # Trash file has timestamp prefix now
+        trash_files = list((tmp_path / ".trash").iterdir())
+        assert len(trash_files) == 1
+        assert "doomed.py" in trash_files[0].name
 
     def test_skip_missing(self, tmp_path):
         result = apply_delete("nope.py", base_dir=tmp_path)
         assert "skip" in result
+
+    def test_blocks_path_traversal(self, tmp_path):
+        result = apply_delete("../../etc/passwd", base_dir=tmp_path)
+        assert "blocked" in result.lower()
