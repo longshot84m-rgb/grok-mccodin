@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -85,11 +86,15 @@ class SQLiteDB:
 
     def table_info(self, table: str) -> list[dict[str, Any]]:
         """Return column info for a table."""
-        # Use parameterized-safe approach: table name can't be parameterized,
-        # so we validate it exists first
+        # Validate table exists via parameterized query to avoid injection
         if table not in self.tables():
             raise DatabaseError(f"Table not found: {table}")
-        return self.query(f"PRAGMA table_info('{table}')")
+        # PRAGMA doesn't support parameterized queries, so we must sanitize.
+        # Since we validated against the actual table list above, we also
+        # enforce identifier-safe characters as defense in depth.
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", table):
+            raise DatabaseError(f"Invalid table name: {table}")
+        return self.query(f"PRAGMA table_info({table})")
 
     def close(self) -> None:
         """Close the database connection."""

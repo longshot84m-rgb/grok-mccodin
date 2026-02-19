@@ -70,6 +70,47 @@ def ps_json(*, all_: bool = False, cwd: str | Path = ".") -> list[dict]:
     return results
 
 
+_BLOCKED_RAW_PREFIXES = ("/etc", "/var", "/root", "/home", "/proc", "/sys")
+
+
+def _validate_volume(vol: str) -> None:
+    """Reject volume mounts that expose dangerous host paths."""
+    # Volume format: host_path:container_path[:options]
+    host_path = vol.split(":")[0]
+    # Allow relative paths (within project) and named volumes (no / or \)
+    if "/" not in host_path and "\\" not in host_path:
+        return  # Named volume like "mydata:/app/data" — fine
+
+    # Normalise to forward-slash for consistent checking
+    normalised = host_path.replace("\\", "/").rstrip("/")
+
+    # Block bare root mounts
+    if normalised in ("/", "C:", "c:"):
+        raise DockerError(
+            f"Blocked volume mount: {host_path!r} — " f"mounting the root filesystem is not allowed"
+        )
+
+    # Block known sensitive top-level Unix directories (raw path check —
+    # works regardless of OS since Docker volumes use Unix-style paths)
+    for prefix in _BLOCKED_RAW_PREFIXES:
+        if normalised == prefix or normalised.startswith(prefix + "/"):
+            # Allow if path is at least 3 levels deep (e.g. /home/user/project)
+            parts = [p for p in normalised.split("/") if p]
+            if len(parts) < 3:
+                raise DockerError(
+                    f"Blocked volume mount: {host_path!r} — "
+                    f"mounting broad host paths is not allowed"
+                )
+
+    # Also check via resolved path for Windows drive-letter style
+    resolved = Path(host_path).resolve().as_posix()
+    resolved_parts = [p for p in resolved.split("/") if p]
+    if len(resolved_parts) < 2:
+        raise DockerError(
+            f"Blocked volume mount: {host_path!r} — " f"mounting broad host paths is not allowed"
+        )
+
+
 def run(
     image: str,
     *,
@@ -92,6 +133,7 @@ def run(
     for k, v in (env or {}).items():
         args.extend(["-e", f"{k}={v}"])
     for vol in volumes or []:
+        _validate_volume(vol)
         args.extend(["-v", vol])
     args.append(image)
     if command:

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 from html.parser import HTMLParser
+from urllib.parse import urlparse
 
 import requests
 
@@ -146,6 +148,53 @@ def _parse_ddg_fallback(html: str, max_results: int) -> list[dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# URL safety validation (SSRF prevention)
+# ---------------------------------------------------------------------------
+
+_BLOCKED_IP_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def _is_safe_url(url: str) -> str:
+    """Validate a URL for safe fetching. Returns an error message or empty string."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return "Invalid URL"
+
+    if parsed.scheme not in ("http", "https"):
+        return f"Blocked URL scheme: {parsed.scheme!r} (only http/https allowed)"
+
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return "URL has no hostname"
+
+    # Check for IP-based hostnames pointing to private ranges
+    try:
+        addr = ipaddress.ip_address(hostname)
+        for network in _BLOCKED_IP_NETWORKS:
+            if addr in network:
+                return f"Blocked private/reserved IP: {hostname}"
+    except ValueError:
+        # Not an IP literal — that's fine, it's a domain name
+        pass
+
+    # Block common localhost aliases
+    if hostname.lower() in ("localhost", "0.0.0.0"):
+        return f"Blocked hostname: {hostname}"
+
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Web Browse / Fetch
 # ---------------------------------------------------------------------------
 
@@ -157,6 +206,10 @@ def web_fetch(url: str, max_chars: int = 8000) -> dict[str, str]:
     On failure, ``text`` is empty and ``error`` is set.
     """
     result: dict[str, str] = {"url": url, "title": "", "text": "", "error": ""}
+    safety_err = _is_safe_url(url)
+    if safety_err:
+        result["error"] = safety_err
+        return result
     try:
         resp = _session.get(url, timeout=DEFAULT_TIMEOUT, allow_redirects=True)
         resp.raise_for_status()
@@ -184,6 +237,10 @@ def web_fetch(url: str, max_chars: int = 8000) -> dict[str, str]:
 
 def web_fetch_raw(url: str) -> bytes:
     """Fetch raw bytes from a URL (for images, PDFs, etc.)."""
+    safety_err = _is_safe_url(url)
+    if safety_err:
+        raise requests.URLRequired(safety_err)
     resp = _session.get(url, timeout=DEFAULT_TIMEOUT)
     resp.raise_for_status()
-    return resp.content
+    content: bytes = resp.content
+    return content

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -15,6 +16,7 @@ from grok_mccodin import __version__
 from grok_mccodin.client import GrokClient, GrokAPIError
 from grok_mccodin.config import Config
 from grok_mccodin.editor import (
+    _safe_resolve,
     apply_create,
     apply_delete,
     apply_edit,
@@ -26,7 +28,7 @@ from grok_mccodin.editor import (
 from grok_mccodin.database import DatabaseError, SQLiteDB
 from grok_mccodin.docker import DockerError
 from grok_mccodin.docker import summary as docker_summary
-from grok_mccodin.executor import run_shell, spawn_agent
+from grok_mccodin.executor import _confirm, run_shell, spawn_agent
 from grok_mccodin.git import GitError
 from grok_mccodin.git import summary as git_summary
 from grok_mccodin.mcp import MCPError, MCPRegistry
@@ -186,6 +188,396 @@ def _handle_mcp(arg: str, config: Config, folder: Path) -> None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Slash command handlers — each takes (arg, config, folder) and returns
+# str | None.  Special return values: "__CLEAR__", "__QUIT__".
+# ---------------------------------------------------------------------------
+
+
+def _cmd_help(arg: str, config: Config, folder: Path) -> str | None:
+    _print_help()
+    return None
+
+
+def _cmd_safelock(arg: str, config: Config, folder: Path) -> str | None:
+    config.safe_lock = not config.safe_lock
+    state = "ON" if config.safe_lock else "OFF"
+    console.print(f"[bold]Safe Lock: {state}[/bold]")
+    return None
+
+
+def _cmd_index(arg: str, config: Config, folder: Path) -> str | None:
+    idx = index_folder(folder)
+    console.print(Panel(idx, title="Project Index", border_style="blue"))
+    return None
+
+
+def _cmd_screenshot(arg: str, config: Config, folder: Path) -> str | None:
+    path = take_screenshot()
+    console.print(f"Screenshot saved: {path}")
+    return None
+
+
+def _cmd_giphy(arg: str, config: Config, folder: Path) -> str | None:
+    if not arg:
+        console.print("[red]Usage: /giphy <search query>[/red]")
+        return None
+    results = search_giphy(arg, config)
+    if results:
+        for i, r in enumerate(results, 1):
+            console.print(f"  {i}. {r['title']}: {r['url']}")
+    else:
+        console.print("[yellow]No results found.[/yellow]")
+    return None
+
+
+def _cmd_post(arg: str, config: Config, folder: Path) -> str | None:
+    if not arg:
+        console.print("[red]Usage: /post <tweet text>[/red]")
+        return None
+    result = post_to_x(arg, config)
+    console.print(result)
+    log_receipt(config.log_file, action="x_post", detail=result)
+    return None
+
+
+def _cmd_run(arg: str, config: Config, folder: Path) -> str | None:
+    if not arg:
+        console.print("[red]Usage: /run <command>[/red]")
+        return None
+    shell_out = run_shell(arg, cwd=folder, safe_lock=config.safe_lock)
+    if shell_out["stdout"]:
+        console.print(shell_out["stdout"])
+    if shell_out["stderr"]:
+        console.print(f"[red]{shell_out['stderr']}[/red]")
+    log_receipt(config.log_file, action="shell_run", detail=arg)
+    return None
+
+
+def _cmd_agent(arg: str, config: Config, folder: Path) -> str | None:
+    if not arg:
+        console.print("[red]Usage: /agent <task>[/red]")
+        return None
+    agent_out = spawn_agent(arg, cwd=folder)
+    if agent_out["stdout"]:
+        console.print(agent_out["stdout"])
+    if agent_out["stderr"]:
+        console.print(f"[red]{agent_out['stderr']}[/red]")
+    return None
+
+
+def _cmd_read(arg: str, config: Config, folder: Path) -> str | None:
+    if not arg:
+        console.print("[red]Usage: /read <filepath>[/red]")
+        return None
+    resolved = _safe_resolve(arg, folder)
+    if resolved is None:
+        console.print(f"[red]Blocked: path escapes project folder: {arg}[/red]")
+        return None
+    content = read_file_safe(resolved)
+    console.print(Panel(content, title=arg, border_style="green"))
+    return None
+
+
+def _cmd_search(arg: str, config: Config, folder: Path) -> str | None:
+    if not arg:
+        console.print("[red]Usage: /search <query>[/red]")
+        return None
+    results = web_search(arg)
+    if results:
+        for i, r in enumerate(results, 1):
+            console.print(f"  {i}. [bold]{r['title']}[/bold]")
+            console.print(f"     {r['url']}")
+            if r.get("snippet"):
+                console.print(f"     [dim]{r['snippet'][:120]}[/dim]")
+    else:
+        console.print("[yellow]No search results found.[/yellow]")
+    log_receipt(config.log_file, action="web_search", detail=arg)
+    return None
+
+
+def _cmd_browse(arg: str, config: Config, folder: Path) -> str | None:
+    if not arg:
+        console.print("[red]Usage: /browse <url>[/red]")
+        return None
+    page = web_fetch(arg)
+    if page["error"]:
+        console.print(f"[red]Error: {page['error']}[/red]")
+    else:
+        title = page["title"] or page["url"]
+        console.print(Panel(page["text"][:3000], title=title, border_style="blue"))
+    log_receipt(config.log_file, action="web_browse", detail=arg)
+    return None
+
+
+def _cmd_git(arg: str, config: Config, folder: Path) -> str | None:
+    try:
+        if not arg:
+            console.print(Panel(git_summary(folder), title="Git Summary", border_style="green"))
+        else:
+            from grok_mccodin import git as git_mod
+
+            sub_parts = arg.split(maxsplit=1)
+            sub_cmd = sub_parts[0]
+            sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
+            if sub_cmd == "status":
+                console.print(git_mod.status(folder))
+            elif sub_cmd == "diff":
+                console.print(git_mod.diff(folder, path=sub_arg))
+            elif sub_cmd == "log":
+                console.print(git_mod.log(folder))
+            elif sub_cmd == "branch":
+                console.print(git_mod.branch(folder))
+            elif sub_cmd == "add":
+                console.print(git_mod.add(sub_arg or ".", cwd=folder))
+                console.print("[green]Staged.[/green]")
+            elif sub_cmd == "commit":
+                if not sub_arg:
+                    console.print("[red]Usage: /git commit <message>[/red]")
+                else:
+                    console.print(git_mod.commit(sub_arg, cwd=folder))
+            elif sub_cmd == "push":
+                if not _confirm("Push to remote?"):
+                    console.print("[dim]Push cancelled.[/dim]")
+                    return None
+                console.print(git_mod.push(cwd=folder))
+            elif sub_cmd == "pull":
+                console.print(git_mod.pull(cwd=folder))
+            elif sub_cmd == "stash":
+                console.print(git_mod.stash(sub_arg or "push", cwd=folder))
+            else:
+                console.print(f"[red]Unknown git subcommand: {sub_cmd}[/red]")
+    except GitError as exc:
+        console.print(f"[red]Git error: {exc}[/red]")
+    log_receipt(config.log_file, action="git", detail=arg)
+    return None
+
+
+def _cmd_pip(arg: str, config: Config, folder: Path) -> str | None:
+    if not arg:
+        console.print("[red]Usage: /pip install <pkg> | /pip list | /pip show <pkg>[/red]")
+        return None
+    try:
+        sub_parts = arg.split(maxsplit=1)
+        sub_cmd = sub_parts[0]
+        sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
+        if sub_cmd == "install" and sub_arg:
+            if not _confirm(f"Install pip package: {sub_arg}?"):
+                console.print("[dim]Install cancelled.[/dim]")
+                return None
+            output = pip_install(sub_arg, cwd=folder)
+            console.print(output)
+        elif sub_cmd == "list":
+            from grok_mccodin.packages import pip_list
+
+            pkgs = pip_list(cwd=folder)
+            for pkg in pkgs[:50]:
+                console.print(f"  {pkg['name']}=={pkg['version']}")
+            if len(pkgs) > 50:
+                console.print(f"  ... and {len(pkgs) - 50} more")
+        elif sub_cmd == "show" and sub_arg:
+            from grok_mccodin.packages import pip_show
+
+            console.print(pip_show(sub_arg, cwd=folder))
+        elif sub_cmd == "freeze":
+            from grok_mccodin.packages import pip_freeze
+
+            console.print(pip_freeze(cwd=folder))
+        else:
+            console.print("[red]Usage: /pip install <pkg> | /pip list | /pip show <pkg>[/red]")
+    except PackageError as exc:
+        console.print(f"[red]pip error: {exc}[/red]")
+    log_receipt(config.log_file, action="pip", detail=arg)
+    return None
+
+
+def _cmd_npm(arg: str, config: Config, folder: Path) -> str | None:
+    if not arg:
+        console.print("[red]Usage: /npm install [pkg] | /npm list | /npm run <script>[/red]")
+        return None
+    try:
+        sub_parts = arg.split(maxsplit=1)
+        sub_cmd = sub_parts[0]
+        sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
+        if sub_cmd == "install":
+            label = sub_arg if sub_arg else "all dependencies"
+            if not _confirm(f"Install npm package: {label}?"):
+                console.print("[dim]Install cancelled.[/dim]")
+                return None
+            output = npm_install(sub_arg or None, cwd=folder)
+            console.print(output)
+        elif sub_cmd == "list":
+            from grok_mccodin.packages import npm_list
+
+            console.print(npm_list(cwd=folder))
+        elif sub_cmd == "run" and sub_arg:
+            from grok_mccodin.packages import npm_run
+
+            console.print(npm_run(sub_arg, cwd=folder))
+        else:
+            console.print("[red]Usage: /npm install [pkg] | /npm list | /npm run <script>[/red]")
+    except PackageError as exc:
+        console.print(f"[red]npm error: {exc}[/red]")
+    log_receipt(config.log_file, action="npm", detail=arg)
+    return None
+
+
+def _cmd_sql(arg: str, config: Config, folder: Path) -> str | None:
+    if not arg:
+        console.print(
+            "[red]Usage: /sql <query>  (uses project.db by default, "
+            "or set DB_PATH in .env)[/red]"
+        )
+        return None
+    db_path = str(folder / config.db_path)
+    is_read = (
+        arg.strip().upper().startswith("SELECT")
+        or arg.strip().upper().startswith("PRAGMA")
+        or arg.strip().upper() in ("SCHEMA", "TABLES")
+    )
+    if is_read and not Path(db_path).is_file():
+        console.print(f"[yellow]Database not found: {db_path}[/yellow]")
+        return None
+    try:
+        db = SQLiteDB(db_path)
+        if arg.strip().upper().startswith("SELECT") or arg.strip().upper().startswith("PRAGMA"):
+            rows = db.query(arg)
+            if rows:
+                tbl = Table(border_style="blue")
+                for col in rows[0]:
+                    tbl.add_column(col)
+                for row in rows[:100]:
+                    tbl.add_row(*(str(v) for v in row.values()))
+                console.print(tbl)
+            else:
+                console.print("[dim]No rows returned.[/dim]")
+        elif arg.strip().upper() == "SCHEMA":
+            console.print(Panel(db.schema() or "[empty]", title="Schema", border_style="blue"))
+        elif arg.strip().upper() == "TABLES":
+            for t in db.tables():
+                console.print(f"  {t}")
+        else:
+            if not _confirm(f"Execute SQL write: {arg[:80]}?"):
+                console.print("[dim]SQL execution cancelled.[/dim]")
+                db.close()
+                return None
+            affected = db.execute(arg)
+            console.print(f"[green]OK, {affected} row(s) affected.[/green]")
+        db.close()
+    except DatabaseError as exc:
+        console.print(f"[red]SQL error: {exc}[/red]")
+    log_receipt(config.log_file, action="sql", detail=arg[:200])
+    return None
+
+
+def _cmd_docker(arg: str, config: Config, folder: Path) -> str | None:
+    try:
+        if not arg:
+            console.print(Panel(docker_summary(folder), title="Docker", border_style="cyan"))
+        else:
+            from grok_mccodin import docker as docker_mod
+
+            sub_parts = arg.split(maxsplit=1)
+            sub_cmd = sub_parts[0]
+            sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
+            if sub_cmd == "ps":
+                console.print(docker_mod.ps(all_=bool(sub_arg), cwd=folder))
+            elif sub_cmd == "images":
+                console.print(docker_mod.images(cwd=folder))
+            elif sub_cmd == "logs" and sub_arg:
+                console.print(docker_mod.logs(sub_arg, cwd=folder))
+            elif sub_cmd == "stop" and sub_arg:
+                if not _confirm(f"Stop container: {sub_arg}?"):
+                    console.print("[dim]Cancelled.[/dim]")
+                    return None
+                console.print(docker_mod.stop(sub_arg, cwd=folder))
+            elif sub_cmd == "rm" and sub_arg:
+                if not _confirm(f"Remove container: {sub_arg}?"):
+                    console.print("[dim]Cancelled.[/dim]")
+                    return None
+                console.print(docker_mod.rm(sub_arg, cwd=folder))
+            elif sub_cmd == "build":
+                if not _confirm("Build Docker image?"):
+                    console.print("[dim]Cancelled.[/dim]")
+                    return None
+                console.print(docker_mod.build(cwd=folder, tag=sub_arg))
+            elif sub_cmd == "up":
+                if not _confirm("Run docker compose up?"):
+                    console.print("[dim]Cancelled.[/dim]")
+                    return None
+                console.print(docker_mod.compose_up(cwd=folder))
+            elif sub_cmd == "down":
+                if not _confirm("Run docker compose down?"):
+                    console.print("[dim]Cancelled.[/dim]")
+                    return None
+                console.print(docker_mod.compose_down(cwd=folder))
+            else:
+                console.print(f"[red]Unknown docker subcommand: {sub_cmd}[/red]")
+    except DockerError as exc:
+        console.print(f"[red]Docker error: {exc}[/red]")
+    log_receipt(config.log_file, action="docker", detail=arg)
+    return None
+
+
+def _cmd_rag(arg: str, config: Config, folder: Path) -> str | None:
+    if not arg:
+        console.print("[red]Usage: /rag <search query>[/red]")
+        return None
+    console.print("[dim]Searching codebase...[/dim]")
+    rag_output = search_codebase(folder, arg)
+    console.print(Panel(rag_output, title="RAG Search Results", border_style="magenta"))
+    log_receipt(config.log_file, action="rag_search", detail=arg)
+    return None
+
+
+def _cmd_mcp(arg: str, config: Config, folder: Path) -> str | None:
+    _handle_mcp(arg, config, folder)
+    return None
+
+
+def _cmd_log(arg: str, config: Config, folder: Path) -> str | None:
+    log_path = Path(config.log_file)
+    if log_path.is_file():
+        console.print(log_path.read_text(encoding="utf-8"))
+    else:
+        console.print("[yellow]No log entries yet.[/yellow]")
+    return None
+
+
+def _cmd_clear(arg: str, config: Config, folder: Path) -> str | None:
+    return "__CLEAR__"
+
+
+def _cmd_quit(arg: str, config: Config, folder: Path) -> str | None:
+    return "__QUIT__"
+
+
+# Dispatch table: command name -> handler function
+_SLASH_DISPATCH: dict[str, Any] = {
+    "/help": _cmd_help,
+    "/safelock": _cmd_safelock,
+    "/index": _cmd_index,
+    "/screenshot": _cmd_screenshot,
+    "/giphy": _cmd_giphy,
+    "/post": _cmd_post,
+    "/run": _cmd_run,
+    "/agent": _cmd_agent,
+    "/read": _cmd_read,
+    "/search": _cmd_search,
+    "/browse": _cmd_browse,
+    "/git": _cmd_git,
+    "/pip": _cmd_pip,
+    "/npm": _cmd_npm,
+    "/sql": _cmd_sql,
+    "/docker": _cmd_docker,
+    "/rag": _cmd_rag,
+    "/mcp": _cmd_mcp,
+    "/log": _cmd_log,
+    "/clear": _cmd_clear,
+    "/quit": _cmd_quit,
+}
+
+
 def _handle_slash(
     raw: str,
     config: Config,
@@ -196,305 +588,9 @@ def _handle_slash(
     cmd = parts[0].lower()
     arg = parts[1] if len(parts) > 1 else ""
 
-    if cmd == "/help":
-        _print_help()
-        return None
-
-    if cmd == "/safelock":
-        config.safe_lock = not config.safe_lock
-        state = "ON" if config.safe_lock else "OFF"
-        console.print(f"[bold]Safe Lock: {state}[/bold]")
-        return None
-
-    if cmd == "/index":
-        idx = index_folder(folder)
-        console.print(Panel(idx, title="Project Index", border_style="blue"))
-        return None
-
-    if cmd == "/screenshot":
-        path = take_screenshot()
-        console.print(f"Screenshot saved: {path}")
-        return None
-
-    if cmd == "/giphy":
-        if not arg:
-            console.print("[red]Usage: /giphy <search query>[/red]")
-            return None
-        results = search_giphy(arg, config)
-        if results:
-            for i, r in enumerate(results, 1):
-                console.print(f"  {i}. {r['title']}: {r['url']}")
-        else:
-            console.print("[yellow]No results found.[/yellow]")
-        return None
-
-    if cmd == "/post":
-        if not arg:
-            console.print("[red]Usage: /post <tweet text>[/red]")
-            return None
-        result = post_to_x(arg, config)
-        console.print(result)
-        log_receipt(config.log_file, action="x_post", detail=result)
-        return None
-
-    if cmd == "/run":
-        if not arg:
-            console.print("[red]Usage: /run <command>[/red]")
-            return None
-        shell_out = run_shell(arg, cwd=folder, safe_lock=config.safe_lock)
-        if shell_out["stdout"]:
-            console.print(shell_out["stdout"])
-        if shell_out["stderr"]:
-            console.print(f"[red]{shell_out['stderr']}[/red]")
-        log_receipt(config.log_file, action="shell_run", detail=arg)
-        return None
-
-    if cmd == "/agent":
-        if not arg:
-            console.print("[red]Usage: /agent <task>[/red]")
-            return None
-        agent_out = spawn_agent(arg, cwd=folder)
-        if agent_out["stdout"]:
-            console.print(agent_out["stdout"])
-        if agent_out["stderr"]:
-            console.print(f"[red]{agent_out['stderr']}[/red]")
-        return None
-
-    if cmd == "/read":
-        if not arg:
-            console.print("[red]Usage: /read <filepath>[/red]")
-            return None
-        content = read_file_safe(folder / arg)
-        console.print(Panel(content, title=arg, border_style="green"))
-        return None
-
-    if cmd == "/search":
-        if not arg:
-            console.print("[red]Usage: /search <query>[/red]")
-            return None
-        results = web_search(arg)
-        if results:
-            for i, r in enumerate(results, 1):
-                console.print(f"  {i}. [bold]{r['title']}[/bold]")
-                console.print(f"     {r['url']}")
-                if r.get("snippet"):
-                    console.print(f"     [dim]{r['snippet'][:120]}[/dim]")
-        else:
-            console.print("[yellow]No search results found.[/yellow]")
-        log_receipt(config.log_file, action="web_search", detail=arg)
-        return None
-
-    if cmd == "/browse":
-        if not arg:
-            console.print("[red]Usage: /browse <url>[/red]")
-            return None
-        page = web_fetch(arg)
-        if page["error"]:
-            console.print(f"[red]Error: {page['error']}[/red]")
-        else:
-            title = page["title"] or page["url"]
-            console.print(Panel(page["text"][:3000], title=title, border_style="blue"))
-        log_receipt(config.log_file, action="web_browse", detail=arg)
-        return None
-
-    if cmd == "/git":
-        try:
-            if not arg:
-                console.print(Panel(git_summary(folder), title="Git Summary", border_style="green"))
-            else:
-                # Pass through to git module
-                from grok_mccodin import git as git_mod
-
-                sub_parts = arg.split(maxsplit=1)
-                sub_cmd = sub_parts[0]
-                sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
-                if sub_cmd == "status":
-                    console.print(git_mod.status(folder))
-                elif sub_cmd == "diff":
-                    console.print(git_mod.diff(folder, path=sub_arg))
-                elif sub_cmd == "log":
-                    console.print(git_mod.log(folder))
-                elif sub_cmd == "branch":
-                    console.print(git_mod.branch(folder))
-                elif sub_cmd == "add":
-                    console.print(git_mod.add(sub_arg or ".", cwd=folder))
-                    console.print("[green]Staged.[/green]")
-                elif sub_cmd == "commit":
-                    if not sub_arg:
-                        console.print("[red]Usage: /git commit <message>[/red]")
-                    else:
-                        console.print(git_mod.commit(sub_arg, cwd=folder))
-                elif sub_cmd == "push":
-                    console.print(git_mod.push(cwd=folder))
-                elif sub_cmd == "pull":
-                    console.print(git_mod.pull(cwd=folder))
-                elif sub_cmd == "stash":
-                    console.print(git_mod.stash(sub_arg or "push", cwd=folder))
-                else:
-                    console.print(f"[red]Unknown git subcommand: {sub_cmd}[/red]")
-        except GitError as exc:
-            console.print(f"[red]Git error: {exc}[/red]")
-        log_receipt(config.log_file, action="git", detail=arg)
-        return None
-
-    if cmd == "/pip":
-        if not arg:
-            console.print("[red]Usage: /pip install <pkg> | /pip list | /pip show <pkg>[/red]")
-            return None
-        try:
-            sub_parts = arg.split(maxsplit=1)
-            sub_cmd = sub_parts[0]
-            sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
-            if sub_cmd == "install" and sub_arg:
-                output = pip_install(sub_arg, cwd=folder)
-                console.print(output)
-            elif sub_cmd == "list":
-                from grok_mccodin.packages import pip_list
-
-                pkgs = pip_list(cwd=folder)
-                for pkg in pkgs[:50]:
-                    console.print(f"  {pkg['name']}=={pkg['version']}")
-                if len(pkgs) > 50:
-                    console.print(f"  ... and {len(pkgs) - 50} more")
-            elif sub_cmd == "show" and sub_arg:
-                from grok_mccodin.packages import pip_show
-
-                console.print(pip_show(sub_arg, cwd=folder))
-            elif sub_cmd == "freeze":
-                from grok_mccodin.packages import pip_freeze
-
-                console.print(pip_freeze(cwd=folder))
-            else:
-                console.print("[red]Usage: /pip install <pkg> | /pip list | /pip show <pkg>[/red]")
-        except PackageError as exc:
-            console.print(f"[red]pip error: {exc}[/red]")
-        log_receipt(config.log_file, action="pip", detail=arg)
-        return None
-
-    if cmd == "/npm":
-        if not arg:
-            console.print("[red]Usage: /npm install [pkg] | /npm list | /npm run <script>[/red]")
-            return None
-        try:
-            sub_parts = arg.split(maxsplit=1)
-            sub_cmd = sub_parts[0]
-            sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
-            if sub_cmd == "install":
-                output = npm_install(sub_arg or None, cwd=folder)
-                console.print(output)
-            elif sub_cmd == "list":
-                from grok_mccodin.packages import npm_list
-
-                console.print(npm_list(cwd=folder))
-            elif sub_cmd == "run" and sub_arg:
-                from grok_mccodin.packages import npm_run
-
-                console.print(npm_run(sub_arg, cwd=folder))
-            else:
-                console.print(
-                    "[red]Usage: /npm install [pkg] | /npm list | /npm run <script>[/red]"
-                )
-        except PackageError as exc:
-            console.print(f"[red]npm error: {exc}[/red]")
-        log_receipt(config.log_file, action="npm", detail=arg)
-        return None
-
-    if cmd == "/sql":
-        if not arg:
-            console.print(
-                "[red]Usage: /sql <query>  (uses project.db by default, "
-                "or set DB_PATH in .env)[/red]"
-            )
-            return None
-        db_path = str(folder / config.db_path)
-        try:
-            db = SQLiteDB(db_path)
-            if arg.strip().upper().startswith("SELECT") or arg.strip().upper().startswith("PRAGMA"):
-                rows = db.query(arg)
-                if rows:
-                    # Print as a table
-                    tbl = Table(border_style="blue")
-                    for col in rows[0]:
-                        tbl.add_column(col)
-                    for row in rows[:100]:
-                        tbl.add_row(*(str(v) for v in row.values()))
-                    console.print(tbl)
-                else:
-                    console.print("[dim]No rows returned.[/dim]")
-            elif arg.strip().upper() == "SCHEMA":
-                console.print(Panel(db.schema() or "[empty]", title="Schema", border_style="blue"))
-            elif arg.strip().upper() == "TABLES":
-                for t in db.tables():
-                    console.print(f"  {t}")
-            else:
-                affected = db.execute(arg)
-                console.print(f"[green]OK, {affected} row(s) affected.[/green]")
-            db.close()
-        except DatabaseError as exc:
-            console.print(f"[red]SQL error: {exc}[/red]")
-        log_receipt(config.log_file, action="sql", detail=arg[:200])
-        return None
-
-    if cmd == "/docker":
-        try:
-            if not arg:
-                console.print(Panel(docker_summary(folder), title="Docker", border_style="cyan"))
-            else:
-                from grok_mccodin import docker as docker_mod
-
-                sub_parts = arg.split(maxsplit=1)
-                sub_cmd = sub_parts[0]
-                sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
-                if sub_cmd == "ps":
-                    console.print(docker_mod.ps(all_=bool(sub_arg), cwd=folder))
-                elif sub_cmd == "images":
-                    console.print(docker_mod.images(cwd=folder))
-                elif sub_cmd == "logs" and sub_arg:
-                    console.print(docker_mod.logs(sub_arg, cwd=folder))
-                elif sub_cmd == "stop" and sub_arg:
-                    console.print(docker_mod.stop(sub_arg, cwd=folder))
-                elif sub_cmd == "rm" and sub_arg:
-                    console.print(docker_mod.rm(sub_arg, cwd=folder))
-                elif sub_cmd == "build":
-                    console.print(docker_mod.build(cwd=folder, tag=sub_arg))
-                elif sub_cmd == "up":
-                    console.print(docker_mod.compose_up(cwd=folder))
-                elif sub_cmd == "down":
-                    console.print(docker_mod.compose_down(cwd=folder))
-                else:
-                    console.print(f"[red]Unknown docker subcommand: {sub_cmd}[/red]")
-        except DockerError as exc:
-            console.print(f"[red]Docker error: {exc}[/red]")
-        log_receipt(config.log_file, action="docker", detail=arg)
-        return None
-
-    if cmd == "/rag":
-        if not arg:
-            console.print("[red]Usage: /rag <search query>[/red]")
-            return None
-        console.print("[dim]Searching codebase...[/dim]")
-        rag_output = search_codebase(folder, arg)
-        console.print(Panel(rag_output, title="RAG Search Results", border_style="magenta"))
-        log_receipt(config.log_file, action="rag_search", detail=arg)
-        return None
-
-    if cmd == "/mcp":
-        _handle_mcp(arg, config, folder)
-        return None
-
-    if cmd == "/log":
-        log_path = Path(config.log_file)
-        if log_path.is_file():
-            console.print(log_path.read_text(encoding="utf-8"))
-        else:
-            console.print("[yellow]No log entries yet.[/yellow]")
-        return None
-
-    if cmd == "/clear":
-        return "__CLEAR__"
-
-    if cmd == "/quit":
-        return "__QUIT__"
+    handler = _SLASH_DISPATCH.get(cmd)
+    if handler is not None:
+        return handler(arg, config, folder)  # type: ignore[no-any-return]
 
     console.print(f"[red]Unknown command: {cmd}[/red]  Type /help for options.")
     return None

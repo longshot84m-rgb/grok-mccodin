@@ -191,6 +191,9 @@ class TFIDFIndex:
         for entry in entries:
             if entry.name.startswith("."):
                 continue
+            # Never follow symlinks — prevents escaping the project tree
+            if entry.is_symlink():
+                continue
             if entry.is_dir():
                 if _should_skip_dir(entry.name):
                     continue

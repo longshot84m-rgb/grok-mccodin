@@ -132,8 +132,20 @@ def init(cwd: str | Path = ".") -> str:
     return _run_git(["init"], cwd=cwd)
 
 
+_SAFE_CLONE_SCHEMES = ("https://", "http://", "git://", "ssh://", "git@")
+
+
 def clone(url: str, dest: str = "", *, cwd: str | Path = ".") -> str:
-    """Clone a repository."""
+    """Clone a repository.
+
+    Only allows https://, http://, git://, ssh://, and git@ URLs.
+    Blocks file:// and other local schemes to prevent local file exfiltration.
+    """
+    if not any(url.startswith(scheme) for scheme in _SAFE_CLONE_SCHEMES):
+        raise GitError(
+            f"Blocked clone URL scheme: {url[:30]}... "
+            f"(allowed: {', '.join(_SAFE_CLONE_SCHEMES)})"
+        )
     args = ["clone", url]
     if dest:
         args.append(dest)

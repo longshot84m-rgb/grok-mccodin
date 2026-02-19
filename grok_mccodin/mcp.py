@@ -241,6 +241,30 @@ class MCPClient:
 # ---------------------------------------------------------------------------
 
 
+def _validate_mcp_configs(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Validate MCP server config entries, dropping invalid ones."""
+    valid: dict[str, dict[str, Any]] = {}
+    for name, cfg in data.items():
+        if not isinstance(cfg, dict):
+            logger.warning(
+                "MCP config %r: expected dict, got %s — skipping", name, type(cfg).__name__
+            )
+            continue
+        if "command" not in cfg or not isinstance(cfg["command"], str):
+            logger.warning("MCP config %r: missing or invalid 'command' — skipping", name)
+            continue
+        if "args" in cfg and not isinstance(cfg["args"], list):
+            logger.warning("MCP config %r: 'args' must be a list — skipping", name)
+            continue
+        # Block path-traversal-style commands (e.g. ../../malicious)
+        cmd = cfg["command"]
+        if ".." in cmd or cmd.startswith("/") and not cmd.startswith("/usr"):
+            logger.warning("MCP config %r: suspicious command path %r — skipping", name, cmd)
+            continue
+        valid[name] = cfg
+    return valid
+
+
 class MCPRegistry:
     """Manages a collection of named MCP server connections.
 
@@ -272,14 +296,15 @@ class MCPRegistry:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                self._servers = data
-                logger.info("Loaded %d MCP server configs", len(data))
+                validated = _validate_mcp_configs(data)
+                self._servers = validated
+                logger.info("Loaded %d MCP server configs", len(validated))
         except (json.JSONDecodeError, OSError) as exc:
             logger.error("Failed to load MCP config: %s", exc)
 
     def load_dict(self, servers: dict[str, dict[str, Any]]) -> None:
         """Load MCP server configurations from a dict."""
-        self._servers = servers
+        self._servers = _validate_mcp_configs(servers)
 
     @property
     def server_names(self) -> list[str]:
