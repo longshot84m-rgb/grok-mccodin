@@ -29,8 +29,12 @@ class TestRunShell:
         assert "Safe Lock" in result["stderr"]
 
     def test_timeout(self):
-        # sleep for longer than timeout
-        result = run_shell("sleep 10", timeout=1, confirm=False)
+        # Use python -c for cross-platform sleep
+        result = run_shell(
+            'python -c "import time; time.sleep(10)"',
+            timeout=1,
+            confirm=False,
+        )
         assert result["returncode"] == -1
         assert "TIMEOUT" in result["stderr"]
 

@@ -8,10 +8,11 @@ on:
 
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12"]
 
     steps:
@@ -25,7 +26,7 @@ jobs:
         run: pip install -e .
 
       - name: Install dev tools
-        run: pip install "black>=26,<27" "ruff>=0.3" "mypy>=1.0" "types-requests>=2.31" "pytest>=8" "pytest-mock>=3.12"
+        run: pip install "black>=26,<27" "ruff>=0.3" "mypy>=1.0" "types-requests>=2.31" "pytest>=8" "pytest-mock>=3.12" "pytest-cov>=5.0"
 
       - name: Format check (black)
         run: black --check --diff .
@@ -37,4 +38,36 @@ jobs:
         run: mypy grok_mccodin --ignore-missing-imports
 
       - name: Tests (pytest)
-        run: pytest -v --tb=short
+        run: pytest -v --tb=short --cov=grok_mccodin --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage report
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 30
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Install security tools
+        run: pip install "bandit>=1.7" "pip-audit>=2.6"
+
+      - name: Security scan (bandit)
+        run: bandit -r grok_mccodin -s B104,B404,B602,B603 --severity-level medium
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Dependency audit (pip-audit)
+        run: pip-audit
