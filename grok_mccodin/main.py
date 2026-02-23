@@ -787,7 +787,9 @@ def chat(
     )
     console.print("[dim]Type /help for commands, /quit to exit.[/dim]\n")
 
-    # Build context and state
+    # Build context and state — reset memory singleton so each chat() starts fresh
+    global _current_memory
+    _current_memory = None
     client = GrokClient(config)
     memory = _get_memory(config)
 
@@ -823,9 +825,14 @@ def chat(
         try:
             # Stream response tokens in real time
             chunks: list[str] = []
-            for token in client.chat_stream(messages):
-                console.print(token, end="", highlight=False)
-                chunks.append(token)
+            interrupted = False
+            try:
+                for token in client.chat_stream(messages):
+                    console.print(token, end="", highlight=False)
+                    chunks.append(token)
+            except KeyboardInterrupt:
+                interrupted = True
+                console.print("\n[dim](interrupted)[/dim]")
             console.print()  # Final newline after streaming
             reply = "".join(chunks)
         except GrokAPIError as exc:
@@ -833,7 +840,8 @@ def chat(
             continue
 
         if not reply:
-            console.print("[dim]Empty response from Grok.[/dim]")
+            if not interrupted:
+                console.print("[dim]Empty response from Grok.[/dim]")
             continue
 
         # Record in memory (triggers compression if over budget)

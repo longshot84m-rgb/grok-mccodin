@@ -115,7 +115,11 @@ class TFIDFIndex:
         return len(self._documents)
 
     def index_text(self, name: str, text: str, chunk_lines: int = 50) -> None:
-        """Add arbitrary text to the index (useful for docs, READMEs, etc.)."""
+        """Add arbitrary text to the index (useful for docs, READMEs, etc.).
+
+        IDF is rebuilt lazily on next search() call, not here — avoids O(n²)
+        cost when adding many documents in sequence.
+        """
         self._built = False
         lines = text.split("\n")
         for start in range(0, len(lines), chunk_lines // 2):
@@ -127,7 +131,6 @@ class TFIDFIndex:
                 self._documents.append(
                     {"path": name, "chunk": start, "text": chunk_text, "tokens": tokens}
                 )
-        self._build_idf()
 
     def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Search the index for the most relevant chunks.
