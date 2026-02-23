@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_int(env_var: str, default: int) -> int:
+    """Parse an env var as int, falling back to default on bad values."""
+    raw = os.getenv(env_var)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r, using default %d", env_var, raw, default)
+        return default
 
 
 def _find_dotenv() -> Path | None:
@@ -69,9 +84,9 @@ class Config:
             giphy_api_key=os.getenv("GIPHY_API_KEY", ""),
             db_path=os.getenv("DB_PATH", "project.db"),
             memory_dir=os.getenv("GROK_MEMORY_DIR", "~/.grok_mccodin/sessions"),
-            token_budget=int(os.getenv("GROK_TOKEN_BUDGET", "6000")),
-            keep_recent=int(os.getenv("GROK_KEEP_RECENT", "10")),
-            memory_top_k=int(os.getenv("GROK_MEMORY_TOP_K", "3")),
+            token_budget=_safe_int("GROK_TOKEN_BUDGET", 6000),
+            keep_recent=_safe_int("GROK_KEEP_RECENT", 10),
+            memory_top_k=_safe_int("GROK_MEMORY_TOP_K", 3),
         )
 
     @property

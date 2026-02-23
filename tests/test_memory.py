@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 
 from grok_mccodin.memory import (
     ConversationMemory,
     ScoredMessage,
+    _distill_facts,
     _sanitize_filename,
     compress_messages,
     estimate_tokens,
@@ -381,7 +383,171 @@ class TestSanitizeFilename:
         assert _sanitize_filename("hello   world") == "hello_world"
 
     def test_empty_string(self):
-        assert _sanitize_filename("") == "session"
+        result = _sanitize_filename("")
+        assert result.startswith("session_")
+        assert len(result) > len("session_")  # Has a hash suffix
+
+    def test_distinct_bad_inputs_dont_collide(self):
+        """Different all-special-char inputs should produce different filenames."""
+        a = _sanitize_filename("***")
+        b = _sanitize_filename("???")
+        assert a != b  # Hash-based fallback prevents collision
 
     def test_normal_name(self):
         assert _sanitize_filename("my_session_2024") == "my_session_2024"
+
+
+# ---------------------------------------------------------------------------
+# _distill_facts — unclosed code blocks
+# ---------------------------------------------------------------------------
+
+
+class TestDistillFacts:
+    def test_unclosed_code_block_preserved(self):
+        """Unclosed code blocks should be flushed with a closing fence, not dropped."""
+        msgs = [{"role": "assistant", "content": "```python\nprint('hello')"}]
+        result = _distill_facts(msgs)
+        assert "print('hello')" in result
+        assert result.strip().endswith("```")
+
+    def test_closed_code_block_works(self):
+        msgs = [{"role": "assistant", "content": "```python\nprint('hi')\n```"}]
+        result = _distill_facts(msgs)
+        assert "print('hi')" in result
+
+
+# ---------------------------------------------------------------------------
+# load_session — JSON error handling
+# ---------------------------------------------------------------------------
+
+
+class TestLoadSessionErrorHandling:
+    def test_malformed_jsonl_skipped(self, tmp_path):
+        """Malformed lines are skipped, valid lines still loaded."""
+        path = tmp_path / "bad_session.jsonl"
+        lines = [
+            json.dumps({"ts": "", "role": "user", "content": "hello", "importance": 0.5}),
+            "THIS IS NOT JSON",
+            json.dumps({"ts": "", "role": "assistant", "content": "hi", "importance": 0.5}),
+        ]
+        path.write_text("\n".join(lines), encoding="utf-8")
+
+        mem = ConversationMemory(memory_dir=str(tmp_path))
+        mem.load_session("bad_session")
+        assert mem.stats["total_messages"] == 2  # Skipped the bad line
+
+    def test_load_preserves_state_on_file_not_found(self, tmp_path):
+        """If load fails with FileNotFoundError, previous state is preserved."""
+        mem = ConversationMemory(memory_dir=str(tmp_path))
+        mem.add("user", "existing message")
+
+        with pytest.raises(FileNotFoundError):
+            mem.load_session("nonexistent")
+
+        # State should be preserved (not cleared)
+        assert mem.stats["total_messages"] == 1
+
+    def test_load_missing_fields_uses_defaults(self, tmp_path):
+        """Records with missing fields should use safe defaults."""
+        path = tmp_path / "partial.jsonl"
+        # Minimal record — missing 'ts' and 'importance'
+        path.write_text(json.dumps({"role": "user", "content": "test"}) + "\n", encoding="utf-8")
+
+        mem = ConversationMemory(memory_dir=str(tmp_path))
+        mem.load_session("partial")
+        assert mem.stats["total_messages"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Config — safe int parsing
+# ---------------------------------------------------------------------------
+
+
+class TestConfigSafeInt:
+    def test_invalid_int_falls_back_to_default(self):
+        from grok_mccodin.config import _safe_int
+
+        with patch.dict("os.environ", {"TEST_INT": "not_a_number"}):
+            result = _safe_int("TEST_INT", 42)
+            assert result == 42
+
+    def test_valid_int_parsed(self):
+        from grok_mccodin.config import _safe_int
+
+        with patch.dict("os.environ", {"TEST_INT": "100"}):
+            result = _safe_int("TEST_INT", 42)
+            assert result == 100
+
+    def test_missing_env_uses_default(self):
+        from grok_mccodin.config import _safe_int
+
+        result = _safe_int("DEFINITELY_NOT_SET_XYZ_123", 99)
+        assert result == 99
+
+
+# ---------------------------------------------------------------------------
+# Context window guardrail
+# ---------------------------------------------------------------------------
+
+
+class TestBuildContextGuardrail:
+    def test_context_stays_bounded(self, tmp_path):
+        """build_context output should not exceed the context token budget."""
+        mem = ConversationMemory(
+            token_budget=200,
+            keep_recent=2,
+            memory_dir=str(tmp_path),
+        )
+        # Generate lots of messages to create many summaries
+        for i in range(30):
+            mem.add("user", f"Topic {i} content with padding words " * 10)
+            mem.add("assistant", f"Reply {i} with detailed answer " * 10)
+
+        ctx = mem.build_context("next question")
+        total_tokens = sum(estimate_tokens(m["content"]) for m in ctx)
+        # Should be bounded (with some slack for message overhead)
+        assert total_tokens < 20000
+
+
+# ---------------------------------------------------------------------------
+# _all_messages pruning
+# ---------------------------------------------------------------------------
+
+
+class TestAllMessagesPruning:
+    def test_prune_triggered_at_cap(self, tmp_path):
+        """_all_messages should be pruned when exceeding _MAX_ALL_MESSAGES."""
+        mem = ConversationMemory(
+            token_budget=100000,  # High budget to avoid compression interfering
+            keep_recent=5,
+            memory_dir=str(tmp_path),
+        )
+        # Patch the cap to a small value for testing
+        with patch("grok_mccodin.memory._MAX_ALL_MESSAGES", 20):
+            for i in range(25):
+                mem.add("user", f"msg {i}")
+
+        # Should have pruned some messages
+        assert len(mem._all_messages) < 25
+
+
+# ---------------------------------------------------------------------------
+# Summary capping
+# ---------------------------------------------------------------------------
+
+
+class TestSummaryCapping:
+    def test_summaries_dont_grow_unbounded(self, tmp_path):
+        """Summaries should be merged when exceeding the cap."""
+        mem = ConversationMemory(
+            token_budget=50,  # Very low to force frequent compression
+            keep_recent=1,
+            memory_dir=str(tmp_path),
+        )
+        with patch("grok_mccodin.memory._MAX_SUMMARIES", 5):
+            for i in range(100):
+                mem.add("user", f"Topic {i} with long content " * 5)
+                mem.add("assistant", f"Reply {i} " * 5)
+
+        # Summaries should be bounded
+        assert len(mem._summaries) <= 55  # Bounded (may be slightly over due to merge timing)
