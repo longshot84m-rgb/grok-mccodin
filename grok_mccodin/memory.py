@@ -383,11 +383,14 @@ class ConversationMemory:
         logger.info("Session saved: %s (%d messages)", path, len(self._all_messages))
         return path
 
-    def load_session(self, name: str) -> None:
+    def load_session(self, name: str) -> int:
         """Load a session from JSONL, rebuilding all internal state.
 
         If the file contains malformed lines, they are skipped with a warning.
         Previous state is preserved if loading fails entirely (e.g. FileNotFoundError).
+
+        Returns:
+            Number of malformed lines that were skipped (0 if clean).
         """
         path = self._memory_dir / f"{_sanitize_filename(name)}.jsonl"
 
@@ -444,6 +447,7 @@ class ConversationMemory:
             len(summaries),
             skipped,
         )
+        return skipped
 
     def list_sessions(self) -> list[str]:
         """Return sorted names of saved sessions."""

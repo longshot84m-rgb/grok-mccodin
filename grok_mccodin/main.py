@@ -566,8 +566,12 @@ def _cmd_log(arg: str, config: Config, folder: Path) -> str | None:
 
 def _cmd_save(arg: str, config: Config, folder: Path) -> str | None:
     mem = _get_memory(config)
-    path = mem.save_session(arg.strip() or None)
-    console.print(f"[green]Session saved: {path}[/green]")
+    try:
+        path = mem.save_session(arg.strip() or None)
+    except OSError as exc:
+        console.print(f"[red]Failed to save session: {exc}[/red]")
+        return None
+    console.print(f"[green]Session saved: {path.name}[/green]")
     return None
 
 
@@ -578,7 +582,7 @@ def _cmd_load(arg: str, config: Config, folder: Path) -> str | None:
         console.print("[red]Usage: /load <session-name>[/red]")
         return None
     try:
-        mem.load_session(name)
+        skipped = mem.load_session(name)
     except FileNotFoundError:
         console.print(f"[red]Session not found: {name}[/red]")
         return None
@@ -587,6 +591,8 @@ def _cmd_load(arg: str, config: Config, folder: Path) -> str | None:
         f"[green]Loaded session '{name}' "
         f"({s['total_messages']} messages, {s['summaries']} summaries)[/green]"
     )
+    if skipped:
+        console.print(f"[yellow]Warning: {skipped} malformed line(s) were skipped.[/yellow]")
     return None
 
 
@@ -605,12 +611,16 @@ def _cmd_sessions(arg: str, config: Config, folder: Path) -> str | None:
 def _cmd_memory(arg: str, config: Config, folder: Path) -> str | None:
     mem = _get_memory(config)
     s = mem.stats
-    console.print(
-        f"Messages: {s['total_messages']}  |  Recent: {s['messages']}  |  "
-        f"Summaries: {s['summaries']}  |  Indexed chunks: {s['total_indexed']}  |  "
-        f"Tokens (recent, est): {s['total_tokens_est']}  |  "
-        f"Session: {s['session'] or '(unsaved)'}"
-    )
+    tbl = Table(title="Memory Status", border_style="cyan", show_header=False)
+    tbl.add_column("Key", style="bold")
+    tbl.add_column("Value")
+    tbl.add_row("Total messages", str(s["total_messages"]))
+    tbl.add_row("Recent window", str(s["messages"]))
+    tbl.add_row("Summaries", str(s["summaries"]))
+    tbl.add_row("Indexed chunks", str(s["total_indexed"]))
+    tbl.add_row("Tokens (recent, est)", str(s["total_tokens_est"]))
+    tbl.add_row("Session", s["session"] or "(unsaved)")
+    console.print(tbl)
     return None
 
 
@@ -810,8 +820,9 @@ def chat(
                 console.print("[dim]Goodbye![/dim]")
                 break
             if result == "__CLEAR__":
+                msg_count = memory.stats["total_messages"]
                 memory.clear()
-                console.print("[dim]History and memory cleared.[/dim]")
+                console.print(f"[dim]Cleared {msg_count} messages and all memory.[/dim]")
             continue
 
         # Re-index folder each turn so Grok sees recent file changes
@@ -869,7 +880,7 @@ def chat(
     if _current_memory is not None and _current_memory.stats["total_messages"] > 0:
         try:
             path = _current_memory.save_session()
-            console.print(f"[dim]Session auto-saved: {path}[/dim]")
+            console.print(f"[dim]Session auto-saved: {path.name}[/dim]")
         except OSError as exc:
             logger.warning("Failed to auto-save session: %s", exc)
 
