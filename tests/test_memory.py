@@ -549,5 +549,62 @@ class TestSummaryCapping:
                 mem.add("user", f"Topic {i} with long content " * 5)
                 mem.add("assistant", f"Reply {i} " * 5)
 
-        # Summaries should be bounded
-        assert len(mem._summaries) <= 55  # Bounded (may be slightly over due to merge timing)
+        # Summaries should be bounded to _MAX_SUMMARIES (patched to 5)
+        # After each compression, the while loop merges until count <= 5
+        assert len(mem._summaries) <= 6  # cap + 1 (new summary added before merge loop)
+
+
+# ---------------------------------------------------------------------------
+# Recall dedup — short messages should not suppress recall
+# ---------------------------------------------------------------------------
+
+
+class TestRecallDedup:
+    def test_short_recent_message_does_not_suppress_recall(self, tmp_path):
+        """A short recent message like 'ok' should not filter out long recalled chunks."""
+        mem = ConversationMemory(
+            token_budget=50000,
+            keep_recent=3,
+            memory_dir=str(tmp_path),
+            top_k=5,
+        )
+        # Add a substantive message about databases (will be pushed out of recent)
+        mem.add("user", "Explain the full database schema with all tables and relationships")
+        mem.add(
+            "assistant",
+            "The database schema has users table with id and name, "
+            "orders table with id and user_id, and products table with id and price.",
+        )
+        # Add enough messages to push the above out of keep_recent=3
+        mem.add("user", "ok")
+        mem.add("assistant", "What would you like to know next?")
+        mem.add("user", "nothing for now")
+
+        # Recall should still find the database content despite "ok" being recent
+        recalled = mem._recall("database schema tables")
+        assert "database" in recalled.lower() or "schema" in recalled.lower()
+
+
+# ---------------------------------------------------------------------------
+# keep_recent=0 clamped to 1
+# ---------------------------------------------------------------------------
+
+
+class TestKeepRecentClamp:
+    def test_keep_recent_zero_clamped(self, tmp_path):
+        """keep_recent=0 should be clamped to 1 to prevent [-0:] bug."""
+        mem = ConversationMemory(
+            token_budget=6000,
+            keep_recent=0,
+            memory_dir=str(tmp_path),
+        )
+        assert mem._keep_recent == 1
+
+    def test_token_budget_zero_clamped(self, tmp_path):
+        """token_budget=0 should be clamped to 1."""
+        mem = ConversationMemory(
+            token_budget=0,
+            keep_recent=10,
+            memory_dir=str(tmp_path),
+        )
+        assert mem._token_budget == 1
