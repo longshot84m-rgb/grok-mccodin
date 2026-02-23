@@ -239,7 +239,7 @@ class ConversationMemory:
     """Manages unlimited conversation context via compression + recall.
 
     Architecture:
-    - ``_all_messages``: append-only full log (never trimmed, for persistence + indexing)
+    - ``_all_messages``: full log (pruned at 5000 to prevent OOM, for persistence + indexing)
     - ``_messages``: recent window (trimmed on compression, for context assembly)
     - ``_summaries``: compressed segments of old messages
     - ``_index``: TF-IDF index over ALL messages (built from ``_all_messages``)
@@ -256,8 +256,8 @@ class ConversationMemory:
         self._messages: list[ScoredMessage] = []
         self._summaries: list[str] = []
         self._index: TFIDFIndex = TFIDFIndex()
-        self._token_budget = token_budget
-        self._keep_recent = keep_recent
+        self._token_budget = max(token_budget, 1)
+        self._keep_recent = max(keep_recent, 1)
         self._memory_dir = Path(memory_dir).expanduser()
         self._top_k = top_k
         self._session_name: str | None = None
@@ -520,8 +520,10 @@ class ConversationMemory:
             if r.get("score", 0) < 0.1:
                 continue
             text = r["text"]
-            # Skip if this chunk is contained in any recent message (or vice versa)
-            if any(text in rc or rc in text for rc in recent_texts):
+            # Skip if this chunk is a substring of any recent message
+            # (only check text-in-recent, NOT recent-in-text — short messages
+            # like "ok" would otherwise suppress all recall via substring match)
+            if any(text in rc for rc in recent_texts):
                 continue
             recalled_parts.append(text)
             if len(recalled_parts) >= self._top_k:

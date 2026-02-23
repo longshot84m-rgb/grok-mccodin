@@ -849,7 +849,9 @@ def chat(
         memory.add("assistant", reply)
 
         # Apply file actions (text was already printed via streaming)
-        _process_actions(reply, config, folder_path)
+        # Skip if interrupted — partial responses may contain truncated commands
+        if not interrupted:
+            _process_actions(reply, config, folder_path)
 
         # Log the exchange
         log_receipt(config.log_file, action="chat", user_input=user_input, detail=reply[:200])
