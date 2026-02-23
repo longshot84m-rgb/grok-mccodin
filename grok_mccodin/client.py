@@ -39,6 +39,7 @@ SYSTEM_PROMPT = (
     "- Docker management (/docker ps, images, logs, stop, build, up, down)\n"
     "- RAG code search (/rag query) for semantic codebase search\n"
     "- MCP servers (/mcp connect/tools/call) for external tool integrations\n"
+    "- Memory (/memory for stats, /save to save session, /load to restore, /sessions to list)\n"
     "When suggesting actions, you can reference these tools."
 )
 

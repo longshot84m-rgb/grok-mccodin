@@ -433,8 +433,9 @@ class TestLoadSessionErrorHandling:
         path.write_text("\n".join(lines), encoding="utf-8")
 
         mem = ConversationMemory(memory_dir=str(tmp_path))
-        mem.load_session("bad_session")
+        skipped = mem.load_session("bad_session")
         assert mem.stats["total_messages"] == 2  # Skipped the bad line
+        assert skipped == 1  # One malformed line reported
 
     def test_load_preserves_state_on_file_not_found(self, tmp_path):
         """If load fails with FileNotFoundError, previous state is preserved."""
