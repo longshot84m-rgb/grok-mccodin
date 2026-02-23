@@ -45,6 +45,12 @@ class Config:
     log_file: str = "grok_mccodin_log.json"
     working_dir: str = field(default_factory=lambda: str(Path.cwd()))
 
+    # Memory / context management
+    memory_dir: str = "~/.grok_mccodin/sessions"
+    token_budget: int = 6000
+    keep_recent: int = 10
+    memory_top_k: int = 3
+
     @classmethod
     def from_env(cls) -> "Config":
         """Build a Config from the process environment (loads .env first)."""
@@ -62,6 +68,10 @@ class Config:
             x_access_secret=os.getenv("X_ACCESS_SECRET", ""),
             giphy_api_key=os.getenv("GIPHY_API_KEY", ""),
             db_path=os.getenv("DB_PATH", "project.db"),
+            memory_dir=os.getenv("GROK_MEMORY_DIR", "~/.grok_mccodin/sessions"),
+            token_budget=int(os.getenv("GROK_TOKEN_BUDGET", "6000")),
+            keep_recent=int(os.getenv("GROK_KEEP_RECENT", "10")),
+            memory_top_k=int(os.getenv("GROK_MEMORY_TOP_K", "3")),
         )
 
     @property

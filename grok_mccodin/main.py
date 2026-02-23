@@ -33,6 +33,7 @@ from grok_mccodin.git import GitError
 from grok_mccodin.git import summary as git_summary
 from grok_mccodin.mcp import MCPError, MCPRegistry
 from grok_mccodin.packages import PackageError, pip_install, npm_install
+from grok_mccodin.memory import ConversationMemory
 from grok_mccodin.rag import search_codebase
 from grok_mccodin.social import post_to_x, search_giphy
 from grok_mccodin.utils import index_folder, log_receipt, read_file_safe, take_screenshot
@@ -79,7 +80,11 @@ SLASH_COMMANDS = {
     "/rag <query>": "Semantic code search (RAG)",
     "/mcp [cmd]": "MCP server management",
     "/log": "Show the receipt log",
-    "/clear": "Clear conversation history",
+    "/save [name]": "Save conversation session",
+    "/load <name>": "Load a saved session",
+    "/sessions": "List saved sessions",
+    "/memory": "Show memory stats",
+    "/clear": "Clear conversation history and memory",
     "/quit": "Exit the CLI",
 }
 
@@ -95,6 +100,22 @@ def _print_help() -> None:
 
 # Global MCP registry (lazily initialized)
 _mcp_registry: MCPRegistry | None = None
+
+# Global conversation memory (lazily initialized)
+_current_memory: ConversationMemory | None = None
+
+
+def _get_memory(config: Config) -> ConversationMemory:
+    """Get or create the conversation memory instance."""
+    global _current_memory
+    if _current_memory is None:
+        _current_memory = ConversationMemory(
+            token_budget=config.token_budget,
+            keep_recent=config.keep_recent,
+            memory_dir=config.memory_dir,
+            top_k=config.memory_top_k,
+        )
+    return _current_memory
 
 
 def _get_mcp_registry(folder: Path) -> MCPRegistry:
@@ -544,6 +565,56 @@ def _cmd_log(arg: str, config: Config, folder: Path) -> str | None:
     return None
 
 
+def _cmd_save(arg: str, config: Config, folder: Path) -> str | None:
+    mem = _get_memory(config)
+    path = mem.save_session(arg.strip() or None)
+    console.print(f"[green]Session saved: {path}[/green]")
+    return None
+
+
+def _cmd_load(arg: str, config: Config, folder: Path) -> str | None:
+    mem = _get_memory(config)
+    name = arg.strip()
+    if not name:
+        console.print("[red]Usage: /load <session-name>[/red]")
+        return None
+    try:
+        mem.load_session(name)
+    except FileNotFoundError:
+        console.print(f"[red]Session not found: {name}[/red]")
+        return None
+    s = mem.stats
+    console.print(
+        f"[green]Loaded session '{name}' "
+        f"({s['total_messages']} messages, {s['summaries']} summaries)[/green]"
+    )
+    return None
+
+
+def _cmd_sessions(arg: str, config: Config, folder: Path) -> str | None:
+    mem = _get_memory(config)
+    sessions = mem.list_sessions()
+    if not sessions:
+        console.print("[yellow]No saved sessions.[/yellow]")
+    else:
+        console.print("[bold]Saved sessions:[/bold]")
+        for s in sessions:
+            console.print(f"  - {s}")
+    return None
+
+
+def _cmd_memory(arg: str, config: Config, folder: Path) -> str | None:
+    mem = _get_memory(config)
+    s = mem.stats
+    console.print(
+        f"Messages: {s['total_messages']}  |  Recent: {s['messages']}  |  "
+        f"Summaries: {s['summaries']}  |  Indexed chunks: {s['total_indexed']}  |  "
+        f"Tokens (recent, est): {s['total_tokens_est']}  |  "
+        f"Session: {s['session'] or '(unsaved)'}"
+    )
+    return None
+
+
 def _cmd_clear(arg: str, config: Config, folder: Path) -> str | None:
     return "__CLEAR__"
 
@@ -573,6 +644,10 @@ _SLASH_DISPATCH: dict[str, Any] = {
     "/rag": _cmd_rag,
     "/mcp": _cmd_mcp,
     "/log": _cmd_log,
+    "/save": _cmd_save,
+    "/load": _cmd_load,
+    "/sessions": _cmd_sessions,
+    "/memory": _cmd_memory,
     "/clear": _cmd_clear,
     "/quit": _cmd_quit,
 }
@@ -714,8 +789,7 @@ def chat(
 
     # Build context and state
     client = GrokClient(config)
-    history: list[dict[str, str]] = []
-    max_history = 40  # Keep last N messages to avoid token overflow
+    memory = _get_memory(config)
 
     # Main loop
     while True:
@@ -735,19 +809,16 @@ def chat(
                 console.print("[dim]Goodbye![/dim]")
                 break
             if result == "__CLEAR__":
-                history.clear()
-                console.print("[dim]History cleared.[/dim]")
+                memory.clear()
+                console.print("[dim]History and memory cleared.[/dim]")
             continue
 
         # Re-index folder each turn so Grok sees recent file changes
         folder_index = index_folder(folder_path)
 
-        # Trim history to avoid exceeding model context window
-        if len(history) > max_history:
-            history = history[-max_history:]
-
-        # Build messages and call Grok
-        messages = client.build_messages(history, user_input, context=folder_index)
+        # Build messages using memory context (summaries + recalled + recent)
+        ctx = memory.build_context(user_input)
+        messages = client.build_messages([], user_input, context=folder_index, memory_context=ctx)
 
         try:
             # Stream response tokens in real time
@@ -765,15 +836,23 @@ def chat(
             console.print("[dim]Empty response from Grok.[/dim]")
             continue
 
-        # Append to history
-        history.append({"role": "user", "content": user_input})
-        history.append({"role": "assistant", "content": reply})
+        # Record in memory (triggers compression if over budget)
+        memory.add("user", user_input)
+        memory.add("assistant", reply)
 
         # Apply file actions (text was already printed via streaming)
         _process_actions(reply, config, folder_path)
 
         # Log the exchange
         log_receipt(config.log_file, action="chat", user_input=user_input, detail=reply[:200])
+
+    # Auto-save session on exit
+    if _current_memory is not None and _current_memory.stats["total_messages"] > 0:
+        try:
+            path = _current_memory.save_session()
+            console.print(f"[dim]Session auto-saved: {path}[/dim]")
+        except OSError as exc:
+            logger.warning("Failed to auto-save session: %s", exc)
 
     # Cleanup MCP servers on exit
     if _mcp_registry is not None:
