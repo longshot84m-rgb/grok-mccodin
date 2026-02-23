@@ -208,14 +208,23 @@ class GrokClient:
         history: list[dict[str, str]],
         user_input: str,
         context: str = "",
+        memory_context: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
-        """Assemble the message list with system prompt, optional context, and history."""
+        """Assemble the message list with system prompt, optional context, and history.
+
+        If *memory_context* is provided it replaces *history* — used by the
+        ConversationMemory system to inject summaries + recalled + recent messages.
+        """
         messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
         if context:
             messages.append({"role": "system", "content": f"Project context:\n{context}"})
 
-        messages.extend(history)
+        if memory_context is not None:
+            messages.extend(memory_context)
+        else:
+            messages.extend(history)
+
         messages.append({"role": "user", "content": user_input})
         return messages
 
