@@ -23,7 +23,7 @@ tweepy = "^4.14"
 typer = {version = "^0.12", extras = ["all"]}
 tqdm = "^4.66"
 python-dotenv = "^1.0"
-pillow = "^10.0"
+pillow = ">=10.0"
 
 [tool.poetry.group.optional.dependencies]
 pyautogui = "^0.9"
@@ -33,6 +33,7 @@ mysql-connector-python = "^8.0"
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
 pytest-mock = "^3.12"
+pytest-cov = "^5.0"
 black = ">=24.0"
 mypy = "^1.0"
 types-requests = "^2.31"
@@ -58,6 +59,17 @@ disallow_untyped_defs = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["grok_mccodin"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+skips = ["B104", "B404", "B603"]
 
 [build-system]
 requires = ["poetry-core"]

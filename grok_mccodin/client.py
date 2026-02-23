@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any
+import time
+from typing import Any, Generator
 
 import requests
 from tqdm import tqdm
@@ -11,6 +13,14 @@ from tqdm import tqdm
 from grok_mccodin.config import Config
 
 logger = logging.getLogger(__name__)
+
+# Status codes that trigger automatic retry
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+# Retry configuration
+_MAX_RETRIES = 3
+_BASE_DELAY = 1.0  # seconds
+_BACKOFF_FACTOR = 2.0
 
 # System prompt that instructs Grok to behave as a coding assistant
 SYSTEM_PROMPT = (
@@ -48,6 +58,61 @@ class GrokClient:
             }
         )
 
+    def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        json_payload: dict[str, Any] | None = None,
+        stream: bool = False,
+        timeout: int = 120,
+    ) -> requests.Response:
+        """Execute an HTTP request with retry logic for transient errors.
+
+        Retries on 429/500/502/503/504 with exponential backoff.
+        Respects the Retry-After header for 429 responses.
+        """
+        last_resp: requests.Response | None = None
+
+        for attempt in range(_MAX_RETRIES + 1):
+            resp = self.session.request(
+                method, url, json=json_payload, stream=stream, timeout=timeout
+            )
+
+            if resp.status_code not in _RETRYABLE_STATUS_CODES:
+                return resp
+
+            last_resp = resp
+
+            if attempt >= _MAX_RETRIES:
+                break
+
+            # Calculate delay
+            delay = _BASE_DELAY * (_BACKOFF_FACTOR**attempt)
+
+            # Respect Retry-After header for 429
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        delay = max(delay, float(retry_after))
+                    except ValueError:
+                        pass  # Non-numeric Retry-After; use calculated delay
+
+            logger.warning(
+                "Retryable error %d from %s (attempt %d/%d, retrying in %.1fs)",
+                resp.status_code,
+                url,
+                attempt + 1,
+                _MAX_RETRIES,
+                delay,
+            )
+            time.sleep(delay)
+
+        # All retries exhausted — return last response (caller will handle the error)
+        assert last_resp is not None
+        return last_resp
+
     def chat(
         self,
         messages: list[dict[str, str]],
@@ -71,7 +136,7 @@ class GrokClient:
 
         # Use tqdm as a simple spinner for the blocking request
         with tqdm(total=0, desc="Thinking", bar_format="{desc}...", leave=False):
-            resp = self.session.post(url, json=payload, timeout=120)
+            resp = self._request_with_retry("POST", url, json_payload=payload)
 
         if resp.status_code != 200:
             logger.error("Grok API error %d: %s", resp.status_code, resp.text[:500])
@@ -85,6 +150,58 @@ class GrokClient:
             raise GrokAPIError(resp.status_code, f"Malformed response: {resp.text[:300]}") from exc
         logger.debug("Reply length: %d chars", len(reply))
         return reply
+
+    def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+    ) -> Generator[str, None, None]:
+        """Send a streaming chat completion request, yielding content chunks.
+
+        Uses SSE (Server-Sent Events) to stream tokens as they are generated.
+        Each yielded string is a content delta (partial token).
+        """
+        url = f"{self.base_url}/chat/completions"
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+
+        logger.debug("POST %s (stream) model=%s msgs=%d", url, self.model, len(messages))
+
+        resp = self._request_with_retry("POST", url, json_payload=payload, stream=True)
+
+        if resp.status_code != 200:
+            logger.error("Grok API error %d: %s", resp.status_code, resp.text[:500])
+            raise GrokAPIError(resp.status_code, resp.text)
+
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            if not raw_line:
+                continue
+
+            # SSE format: "data: {json}" or "data: [DONE]"
+            if not raw_line.startswith("data: "):
+                continue
+
+            data_str = raw_line[len("data: ") :]
+
+            if data_str.strip() == "[DONE]":
+                break
+
+            try:
+                chunk = json.loads(data_str)
+                delta = chunk["choices"][0]["delta"]
+                content = delta.get("content", "")
+                if content:
+                    yield content
+            except (json.JSONDecodeError, KeyError, IndexError) as exc:
+                logger.debug("Skipping unparseable SSE chunk: %s", exc)
+                continue
 
     def build_messages(
         self,

@@ -601,10 +601,24 @@ def _process_response(
     config: Config,
     folder: Path,
 ) -> None:
-    """Parse Grok's reply and apply edits, creates, deletes, commands."""
+    """Parse Grok's reply, render as Markdown, and apply actions."""
     # Show the reply as rendered markdown
     console.print(Markdown(reply))
 
+    # Apply file/command actions
+    _process_actions(reply, config, folder)
+
+
+def _process_actions(
+    reply: str,
+    config: Config,
+    folder: Path,
+) -> None:
+    """Apply file edits, creates, deletes, and commands from Grok's reply.
+
+    Unlike _process_response, this does NOT render the reply text
+    (used when streaming has already printed it).
+    """
     # Apply file edits (code blocks with filenames)
     for block in extract_code_blocks(reply):
         if block["filename"]:
@@ -736,17 +750,27 @@ def chat(
         messages = client.build_messages(history, user_input, context=folder_index)
 
         try:
-            reply = client.chat(messages)
+            # Stream response tokens in real time
+            chunks: list[str] = []
+            for token in client.chat_stream(messages):
+                console.print(token, end="", highlight=False)
+                chunks.append(token)
+            console.print()  # Final newline after streaming
+            reply = "".join(chunks)
         except GrokAPIError as exc:
             console.print(f"[bold red]API Error:[/bold red] {exc}")
+            continue
+
+        if not reply:
+            console.print("[dim]Empty response from Grok.[/dim]")
             continue
 
         # Append to history
         history.append({"role": "user", "content": user_input})
         history.append({"role": "assistant", "content": reply})
 
-        # Process the response (render + apply actions)
-        _process_response(reply, config, folder_path)
+        # Apply file actions (text was already printed via streaming)
+        _process_actions(reply, config, folder_path)
 
         # Log the exchange
         log_receipt(config.log_file, action="chat", user_input=user_input, detail=reply[:200])
