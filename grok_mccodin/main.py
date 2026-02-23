@@ -13,7 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from grok_mccodin import __version__
-from grok_mccodin.client import GrokClient, GrokAPIError
+from grok_mccodin.client import GrokClient, GrokAPIError, SYSTEM_PROMPT
 from grok_mccodin.config import Config
 from grok_mccodin.editor import (
     _safe_resolve,
@@ -33,7 +33,7 @@ from grok_mccodin.git import GitError
 from grok_mccodin.git import summary as git_summary
 from grok_mccodin.mcp import MCPError, MCPRegistry
 from grok_mccodin.packages import PackageError, pip_install, npm_install
-from grok_mccodin.memory import ConversationMemory
+from grok_mccodin.memory import ConversationMemory, estimate_tokens
 from grok_mccodin.rag import search_codebase
 from grok_mccodin.social import post_to_x, search_giphy
 from grok_mccodin.utils import index_folder, log_receipt, read_file_safe, take_screenshot
@@ -446,8 +446,7 @@ def _cmd_npm(arg: str, config: Config, folder: Path) -> str | None:
 def _cmd_sql(arg: str, config: Config, folder: Path) -> str | None:
     if not arg:
         console.print(
-            "[red]Usage: /sql <query>  (uses project.db by default, "
-            "or set DB_PATH in .env)[/red]"
+            "[red]Usage: /sql <query>  (uses project.db by default, or set DB_PATH in .env)[/red]"
         )
         return None
     db_path = str(folder / config.db_path)
@@ -818,8 +817,19 @@ def chat(
         # Re-index folder each turn so Grok sees recent file changes
         folder_index = index_folder(folder_path)
 
+        # Record user message BEFORE the API call so it's:
+        # 1. Indexed for TF-IDF recall immediately
+        # 2. Not lost if the API call crashes
+        memory.add("user", user_input)
+
         # Build messages using memory context (summaries + recalled + recent)
-        ctx = memory.build_context(user_input)
+        # Reserve tokens for system prompt + folder index so memory doesn't overflow
+        reserved = (
+            estimate_tokens(SYSTEM_PROMPT)
+            + estimate_tokens(folder_index)
+            + estimate_tokens(user_input)
+        )
+        ctx = memory.build_context(user_input, reserved_tokens=reserved)
         messages = client.build_messages([], user_input, context=folder_index, memory_context=ctx)
 
         try:
@@ -844,8 +854,7 @@ def chat(
                 console.print("[dim]Empty response from Grok.[/dim]")
             continue
 
-        # Record in memory (triggers compression if over budget)
-        memory.add("user", user_input)
+        # Record assistant reply after API call completes
         memory.add("assistant", reply)
 
         # Apply file actions (text was already printed via streaming)

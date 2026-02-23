@@ -287,15 +287,21 @@ class ConversationMemory:
         self._maybe_compress()
         self._maybe_prune()
 
-    def build_context(self, user_input: str) -> list[dict[str, str]]:
+    def build_context(self, user_input: str, reserved_tokens: int = 0) -> list[dict[str, str]]:
         """Assemble context for the API call.
 
         Returns ``[summaries] + [recalled] + [recent]``.
         Does NOT include *user_input* — that is appended by ``build_messages()``.
         Enforces a total token budget to prevent context window overflow.
+
+        Args:
+            user_input: The current user query (used for TF-IDF recall).
+            reserved_tokens: Tokens already consumed by system prompt, folder
+                index, etc.  Subtracted from the context budget so memory
+                never overflows the model's window.
         """
         parts: list[dict[str, str]] = []
-        budget_remaining = _CONTEXT_TOKEN_BUDGET
+        budget_remaining = max(_CONTEXT_TOKEN_BUDGET - reserved_tokens, 200)
 
         # 1. Recent messages first (highest priority — always included)
         recent = self._messages[-self._keep_recent :]
@@ -336,11 +342,24 @@ class ConversationMemory:
         return parts
 
     def save_session(self, name: str | None = None) -> Path:
-        """Persist the full session (``_all_messages`` + ``_summaries``) to JSONL."""
+        """Persist the full session (``_all_messages`` + ``_summaries``) to JSONL.
+
+        If a file already exists for this session, the old file is renamed to
+        ``.bak`` before writing so no data is silently lost.
+        """
         name = name or self._session_name or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self._session_name = name
         path = self._memory_dir / f"{_sanitize_filename(name)}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Back up existing file before overwriting
+        if path.exists():
+            bak = path.with_suffix(".jsonl.bak")
+            try:
+                path.replace(bak)
+                logger.debug("Backed up existing session to %s", bak)
+            except OSError as exc:
+                logger.warning("Could not back up session file: %s", exc)
 
         with open(path, "w", encoding="utf-8") as fh:
             for msg in self._all_messages:
@@ -489,7 +508,11 @@ class ConversationMemory:
             logger.debug("Merged oldest summaries. %d summaries remain.", len(self._summaries))
 
     def _maybe_prune(self) -> None:
-        """Prune _all_messages when it exceeds the cap to prevent OOM."""
+        """Prune _all_messages when it exceeds the cap to prevent OOM.
+
+        Also rebuilds the TF-IDF index from the surviving messages so stale
+        entries for pruned messages don't waste memory or return phantom results.
+        """
         if len(self._all_messages) <= _MAX_ALL_MESSAGES:
             return
 
@@ -502,11 +525,25 @@ class ConversationMemory:
             len(self._all_messages),
         )
 
+        # Rebuild index from surviving messages
+        self._index = TFIDFIndex()
+        self._message_count = 0
+        for msg in self._all_messages:
+            self._message_count += 1
+            self._index.index_text(
+                f"msg_{self._message_count}", msg.content, chunk_lines=_INDEX_CHUNK_LINES
+            )
+
     def _recall(self, query: str) -> str:
         """Search the TF-IDF index for relevant old context, deduplicating against recent.
 
         Uses substring containment for dedup because TF-IDF chunks may not
         match full message content exactly (chunks can be sub-slices).
+
+        Applies a time-decay boost so newer indexed content is preferred over
+        stale content at equal relevance.  The decay factor is
+        ``1 / (1 + age_ratio * 0.5)`` where *age_ratio* is how far back the
+        chunk's index key sits relative to total message count.
         """
         results = self._index.search(query, top_k=self._top_k + self._keep_recent)
         if not results:
@@ -514,6 +551,21 @@ class ConversationMemory:
 
         # Build recent content for substring-based deduplication
         recent_texts = [m.content for m in self._messages[-self._keep_recent :]]
+
+        # Apply time-decay: chunks indexed later (higher msg_N) get a boost
+        total = max(self._message_count, 1)
+        for r in results:
+            # Extract message index from the path key "msg_<N>"
+            try:
+                msg_idx = int(r["path"].split("_", 1)[1])
+            except (IndexError, ValueError):
+                msg_idx = 0
+            age_ratio = 1.0 - (msg_idx / total)  # 0.0 = newest, 1.0 = oldest
+            decay = 1.0 / (1.0 + age_ratio * 0.5)
+            r["score"] = r.get("score", 0) * decay
+
+        # Re-sort after decay adjustment
+        results.sort(key=lambda r: r.get("score", 0), reverse=True)
 
         recalled_parts: list[str] = []
         for r in results:

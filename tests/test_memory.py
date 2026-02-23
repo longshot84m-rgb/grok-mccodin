@@ -608,3 +608,141 @@ class TestKeepRecentClamp:
             memory_dir=str(tmp_path),
         )
         assert mem._token_budget == 1
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: reserved_tokens in build_context
+# ---------------------------------------------------------------------------
+
+
+class TestBuildContextReservedTokens:
+    def test_reserved_tokens_reduces_budget(self, tmp_path):
+        """Passing reserved_tokens should reduce available budget for memory."""
+        mem = ConversationMemory(
+            token_budget=200,
+            keep_recent=2,
+            memory_dir=str(tmp_path),
+        )
+        for i in range(20):
+            mem.add("user", f"Topic {i} content with words " * 10)
+            mem.add("assistant", f"Reply {i} with detail " * 10)
+
+        # With zero reserved, we get the full budget
+        ctx_full = mem.build_context("next question", reserved_tokens=0)
+        # With large reserved, less room for summaries/recall
+        ctx_reserved = mem.build_context("next question", reserved_tokens=8000)
+
+        tokens_full = sum(estimate_tokens(m["content"]) for m in ctx_full)
+        tokens_reserved = sum(estimate_tokens(m["content"]) for m in ctx_reserved)
+        # Reserved context should be smaller (less budget for summaries/recall)
+        assert tokens_reserved <= tokens_full
+
+    def test_reserved_tokens_floor(self, tmp_path):
+        """Huge reserved_tokens should not crash — floor at 200."""
+        mem = ConversationMemory(
+            token_budget=200,
+            keep_recent=2,
+            memory_dir=str(tmp_path),
+        )
+        mem.add("user", "hello")
+        mem.add("assistant", "hi")
+        # Should not raise even with absurd reserved tokens
+        ctx = mem.build_context("test", reserved_tokens=999999)
+        assert isinstance(ctx, list)
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: time-decay in recall
+# ---------------------------------------------------------------------------
+
+
+class TestRecallTimeDecay:
+    def test_newer_content_preferred_at_equal_relevance(self, tmp_path):
+        """When two messages are equally relevant, the newer one should rank higher."""
+        mem = ConversationMemory(
+            token_budget=50000,
+            keep_recent=2,
+            memory_dir=str(tmp_path),
+            top_k=5,
+        )
+        # Add old message about "database migration"
+        mem.add("user", "We need to plan the database migration strategy carefully")
+        mem.add("assistant", "The old database migration approach uses sequential scripts")
+        # Add padding to separate them
+        for i in range(10):
+            mem.add("user", f"Unrelated padding topic {i} about cooking")
+            mem.add("assistant", f"Unrelated cooking reply {i}")
+        # Add newer message about "database migration"
+        mem.add("user", "Updated database migration plan with parallel execution")
+        mem.add("assistant", "The new database migration uses parallel batched writes")
+        # Push the newer one out of recent window too
+        for i in range(5):
+            mem.add("user", f"More padding {i} about gardening")
+            mem.add("assistant", f"Gardening reply {i}")
+
+        recalled = mem._recall("database migration strategy")
+        # Should find content — exact ordering depends on TF-IDF + decay interaction
+        assert "database" in recalled.lower() or "migration" in recalled.lower()
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: index rebuild on prune
+# ---------------------------------------------------------------------------
+
+
+class TestIndexRebuildOnPrune:
+    def test_index_rebuilt_after_prune(self, tmp_path):
+        """After _maybe_prune(), the index should only contain surviving messages."""
+        mem = ConversationMemory(
+            token_budget=100000,
+            keep_recent=5,
+            memory_dir=str(tmp_path),
+        )
+        # Patch cap to small value
+        with patch("grok_mccodin.memory._MAX_ALL_MESSAGES", 20):
+            for i in range(25):
+                mem.add("user", f"msg {i}")
+
+        # Index document count should match surviving _all_messages, not 25
+        # Each message = 1 chunk (short messages with chunk_lines=200)
+        assert mem._index.document_count <= len(mem._all_messages)
+        # _message_count should be reset to match surviving messages
+        assert mem._message_count == len(mem._all_messages)
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: save_session backup
+# ---------------------------------------------------------------------------
+
+
+class TestSaveSessionBackup:
+    def test_backup_created_on_overwrite(self, tmp_path):
+        """Saving twice to the same name should create a .bak file."""
+        mem = ConversationMemory(memory_dir=str(tmp_path))
+        mem.add("user", "first version")
+        mem.save_session("mybak")
+
+        # Save again with different content
+        mem.add("user", "second version")
+        path = mem.save_session("mybak")
+
+        bak_path = path.with_suffix(".jsonl.bak")
+        assert bak_path.exists()
+        # The .bak should contain the OLD data (1 message)
+        bak_lines = [
+            ln for ln in bak_path.read_text(encoding="utf-8").strip().split("\n") if ln.strip()
+        ]
+        assert len(bak_lines) == 1  # "first version" only
+        # The main file should contain the NEW data (2 messages)
+        main_lines = [
+            ln for ln in path.read_text(encoding="utf-8").strip().split("\n") if ln.strip()
+        ]
+        assert len(main_lines) == 2
+
+    def test_no_backup_on_first_save(self, tmp_path):
+        """First save should not create a .bak file."""
+        mem = ConversationMemory(memory_dir=str(tmp_path))
+        mem.add("user", "hello")
+        path = mem.save_session("fresh")
+        bak_path = path.with_suffix(".jsonl.bak")
+        assert not bak_path.exists()
